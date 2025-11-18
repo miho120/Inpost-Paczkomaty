@@ -1,0 +1,31 @@
+{
+  "config": {
+    "error": {
+      "invalid_phone_format": "Format wprowadzonego numer telefonu jest nieprawidłowy.",
+      "phone_unknown_server_error": "Błąd serwera podczas dodawania integracji dla podanego numeru telefonu.",
+      "invalid_code": "Podany kod stracił ważność lub jest nieprawidłowy."
+    },
+    "step": {
+      "user": {
+        "title": "Numer telefonu zarejestrowanego w appce InPost",
+        "description": "Podaj dokładnie 9 cyfr numeru telefonu",
+        "data": {
+          "lockers": "Paczkomat",
+          "phone_number": "Numer telefonu"
+        }
+      },
+      "code": {
+        "title": "Podaj kod SMS",
+        "description": "Podaj kod z SMS który właśnie otrzymałeś",
+        "data": {
+          "sms_code": "Kod SMS"
+        }
+      },
+      "lockers": {
+        "data": {
+          "lockers": "Paczkomaty"
+        }
+      }
+    }
+  }
+}

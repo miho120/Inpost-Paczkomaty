@@ -1,0 +1,31 @@
+{
+  "config": {
+    "error": {
+      "invalid_phone_format": "Phone format is invalid",
+      "phone_unknown_server_error": "Unknown server error while registering phone",
+      "invalid_code": "Submitted code is either invalid or expired"
+    },
+    "step": {
+      "user": {
+        "title": "InPost phone number",
+        "description": "Enter exactly 9 digits",
+        "data": {
+          "lockers": "Parcel Locker",
+          "phone_number": "Phone number"
+        }
+      },
+      "code": {
+        "title": "Enter SMS Code",
+        "description": "Please enter the SMS code you received.",
+        "data": {
+          "sms_code": "SMS Code"
+        }
+      },
+      "lockers": {
+        "data": {
+          "lockers": "Parcel Locker"
+        }
+      }
+    }
+  }
+}

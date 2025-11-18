@@ -1,0 +1,8 @@
+.venv/
+bin/
+ha-local
+include/
+pyvenv.cfg
+.idea/
+lib/
+tests/__pycache__
