@@ -4,3 +4,4 @@ DOMAIN = "inpost_paczkomaty"
 
 HA_ID_ENTRY_CONFIG = "ha_id"
 SECRET_ENTRY_CONFIG = "secret"
+ENTRY_PHONE_NUMBER_CONFIG = "phone_number"

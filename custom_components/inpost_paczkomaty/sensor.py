@@ -3,13 +3,15 @@ import logging
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, ENTRY_PHONE_NUMBER_CONFIG
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     tracked_lockers = entry.options.get("lockers", [])
+    phone_number = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
+
     coordinator = entry.runtime_data
 
     _LOGGER.debug("Creating sensors for lockers %s", tracked_lockers)
@@ -20,15 +22,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
 
     # Global sensors
-    entities.append(AllParcelsCount(coordinator))
-    entities.append(EnRouteParcelsCount(coordinator))
-    entities.append(ReadyForPickupParcelsCount(coordinator))
+    entities.append(AllParcelsCount(coordinator, phone_number))
+    entities.append(EnRouteParcelsCount(coordinator, phone_number))
+    entities.append(ReadyForPickupParcelsCount(coordinator, phone_number))
 
     for locker_id in tracked_lockers:
         # Per locker sensor
         entities.append(
             ParcelLockerNumericSensor(
                 coordinator,
+                phone_number,
                 locker_id,
                 "en_route_count",
                 lambda data, locker_id: (
@@ -41,6 +44,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.append(
             ParcelLockerNumericSensor(
                 coordinator,
+                phone_number,
                 locker_id,
                 "ready_for_pickup_count",
                 lambda data, locker_id: (
@@ -52,7 +56,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
         )
         entities.append(
             ParcelLockerIdSensor(
-                coordinator, locker_id, "locker_id", lambda data, locker_id: locker_id
+                coordinator,
+                phone_number,
+                locker_id,
+                "locker_id",
+                lambda data, locker_id: locker_id,
             )
         )
 
@@ -62,13 +70,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class AllParcelsCount(CoordinatorEntity, SensorEntity):
     """Sensor not bound to any device."""
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator, phone_number):
         super().__init__(coordinator)
-        self._attr_name = "InPost all parcels count"
+        self._phone_number = phone_number
+        self._attr_name = f"InPost {self._phone_number} all parcels count"
 
     @property
     def unique_id(self):
-        return f"{DOMAIN}_total_count"
+        return f"{DOMAIN}_{self._phone_number}_total_count"
 
     @property
     def device_info(self):
@@ -83,13 +92,14 @@ class AllParcelsCount(CoordinatorEntity, SensorEntity):
 class EnRouteParcelsCount(CoordinatorEntity, SensorEntity):
     """Sensor not bound to any device."""
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator, phone_number):
         super().__init__(coordinator)
-        self._attr_name = "InPost en route parcels count"
+        self._phone_number = phone_number
+        self._attr_name = f"InPost {self._phone_number} en route parcels count"
 
     @property
     def unique_id(self):
-        return f"{DOMAIN}_en_route_count"
+        return f"{DOMAIN}_{self._phone_number}_en_route_count"
 
     @property
     def device_info(self):
@@ -103,13 +113,14 @@ class EnRouteParcelsCount(CoordinatorEntity, SensorEntity):
 class ReadyForPickupParcelsCount(CoordinatorEntity, SensorEntity):
     """Sensor not bound to any device."""
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator, phone_number):
         super().__init__(coordinator)
-        self._attr_name = "InPost ready for pickup parcels count"
+        self._phone_number = phone_number
+        self._attr_name = f"InPost {self._phone_number} ready for pickup parcels count"
 
     @property
     def unique_id(self):
-        return f"{DOMAIN}_ready_for_pickup_count"
+        return f"{DOMAIN}_{self._phone_number}_ready_for_pickup_count"
 
     @property
     def device_info(self):
@@ -123,8 +134,9 @@ class ReadyForPickupParcelsCount(CoordinatorEntity, SensorEntity):
 class ParcelLockerDeviceSensor(CoordinatorEntity):
     """Base class for all parcel locker sensors."""
 
-    def __init__(self, coordinator, locker_id, key, _value_fn=None):
+    def __init__(self, coordinator, phone_number, locker_id, key, _value_fn=None):
         super().__init__(coordinator)
+        self._phone_number = phone_number
         self._locker_id = locker_id
         self._key = key
         self._value_fn = _value_fn
@@ -139,11 +151,11 @@ class ParcelLockerDeviceSensor(CoordinatorEntity):
 
     @property
     def unique_id(self):
-        return f"{DOMAIN}_{self._locker_id}_{self._key}"
+        return f"{DOMAIN}_{self._phone_number}_{self._locker_id}_{self._key}"
 
     @property
     def name(self):
-        return f"InPost {self._locker_id} {self._key.replace('_', ' ').title()}"
+        return f"InPost {self._phone_number} {self._locker_id} {self._key.replace('_', ' ').title()}"
 
     @property
     def _sensor_data(self):

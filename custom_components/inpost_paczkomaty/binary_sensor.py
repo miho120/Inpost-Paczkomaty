@@ -5,6 +5,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
 )
 
+from .const import ENTRY_PHONE_NUMBER_CONFIG
 from .sensor import ParcelLockerDeviceSensor
 
 _LOGGER = logging.getLogger(__name__)
@@ -12,6 +13,8 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     tracked_lockers = entry.options.get("lockers", [])
+    phone_number = entry.data.get(ENTRY_PHONE_NUMBER_CONFIG)
+
     coordinator = entry.runtime_data
 
     _LOGGER.debug("Creating binary sensors for lockers %s", tracked_lockers)
@@ -23,6 +26,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.append(
             ParcelLockerBinarySensor(
                 coordinator,
+                phone_number,
                 locker_id,
                 "en_route",
                 lambda data, locker_id: getattr(
@@ -34,6 +38,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.append(
             ParcelLockerBinarySensor(
                 coordinator,
+                phone_number,
                 locker_id,
                 "ready_for_pickup_count",
                 lambda data, locker_id: getattr(
