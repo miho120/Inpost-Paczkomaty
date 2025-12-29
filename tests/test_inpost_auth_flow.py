@@ -801,7 +801,7 @@ class TestInpostAuth:
         with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = HttpResponse(body={}, status=200)
 
-            response = await auth.initialize_session()
+            await auth.initialize_session()
 
             assert mock_get.called
             call_args = mock_get.call_args
