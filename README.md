@@ -34,7 +34,7 @@ This Home Assistant integration tracks your parcels by fetching data from InPost
    Integration**, and search for **InPost Paczkomaty**.
 7. Complete the setup flow by providing your phone number and the received SMS code.
 8. If prompted, verify your email by clicking the link in the email sent by InPost (this can be done on any device). **Note:** This is a legitimate verification email - it will **not** ask for any credentials. Once verified, click `Submit` to proceed.
-9. Select the specific parcel lockers you wish to monitor.
+9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically.
 
 ### Manual Installation
 
