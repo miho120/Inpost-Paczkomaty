@@ -8,6 +8,21 @@
 * **auth:** Store access_token and refresh_token for authenticated API calls
 * **auth:** Add email confirmation step for existing InPost accounts
 * **auth:** Support multi-language authentication flow (Polish/English[default])
+* **sensors:** Add locker address sensor with full location details (city, street, building number)
+* **sensors:** Add locker description sensor with location hint (e.g., "near Biedronka store")
+
+
+### Documentation
+
+* Update README with usage examples (dashboard panel, pickup notifications)
+
+
+### Code Quality
+
+* Increase test coverage
+* Organize exceptions into dedicated module
+* Extract HTTP client logic into separate `http_client` module
+* Refactor utility functions into `utils` module
 
 
 ### Breaking Changes

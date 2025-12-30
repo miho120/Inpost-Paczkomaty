@@ -44,7 +44,7 @@ This Home Assistant integration tracks your parcels by fetching data from InPost
 3. **Restart Home Assistant**.
 4. Execute steps **6, 7, and 8** from the HACS installation method above.
 
-## Usage
+## Usage Examples
 
 ### Dashboard panel
 
