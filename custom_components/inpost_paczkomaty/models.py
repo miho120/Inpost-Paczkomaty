@@ -63,18 +63,18 @@ class InPostParcelLockerPointCoordinates:
 class InPostParcelLocker:
     """InPost parcel locker point details."""
 
-    n: str
+    n: str  # Locker code
     t: int
-    d: str
+    d: str  # Locker description (like "obiekt mieszkalny", "Przy sklepie Netto", etc.)
     m: str
     q: int | str
     f: str
-    c: str
-    g: str
-    e: str
-    r: str
-    o: str
-    b: str
+    c: str  # Locker city (like "Gdańsk", "Warszawa", etc.)
+    g: str  # Locker gmina (like "Gdańsk", "Warszawa", etc.)
+    e: str  # Locker street (like "Wieżycka", "Rakoczego", etc.)
+    r: str  # Locker province (like "pomorskie", "mazowieckie", etc.)
+    o: str  # Locker zip code (like "80-180", "80-288", etc.)
+    b: str  # Locker building number (like "8", "13", etc.)
     h: str
     i: str
     l: InPostParcelLockerPointCoordinates  # noqa: E741
@@ -226,6 +226,117 @@ EN_ROUTE_STATUSES = frozenset(
         "DISPATCHED_BY_SENDER",
     }
 )
+
+
+# =============================================================================
+# User Profile API Response Models
+# =============================================================================
+
+
+@dataclass
+class ProfileDeliveryPoint:
+    """Delivery point (parcel locker) from user profile."""
+
+    name: str
+    type: str = "PL"
+    address_lines: List[str] = field(default_factory=list)
+    active: bool = True
+    preferred: bool = False
+
+    @property
+    def description(self) -> str:
+        """Get formatted description from address lines."""
+        return ", ".join(self.address_lines) if self.address_lines else ""
+
+
+@dataclass
+class ProfileDeliveryPoints:
+    """Container for delivery points in profile."""
+
+    items: List[ProfileDeliveryPoint] = field(default_factory=list)
+
+
+@dataclass
+class ProfileDeliveryAddressDetails:
+    """Address details in profile delivery address."""
+
+    post_code: Optional[str] = None
+    city: Optional[str] = None
+    street: Optional[str] = None
+    building: Optional[str] = None
+    flat: Optional[str] = None
+    country_code: Optional[str] = None
+
+
+@dataclass
+class ProfileDeliveryAddressData:
+    """Data for a delivery address."""
+
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    details: Optional[ProfileDeliveryAddressDetails] = None
+
+
+@dataclass
+class ProfileDeliveryAddress:
+    """Delivery address from user profile."""
+
+    id: str
+    data: Optional[ProfileDeliveryAddressData] = None
+
+
+@dataclass
+class ProfileDeliveryAddresses:
+    """Container for delivery addresses in profile."""
+
+    items: List[ProfileDeliveryAddress] = field(default_factory=list)
+
+
+@dataclass
+class ProfileDelivery:
+    """Delivery settings from user profile."""
+
+    points: Optional[ProfileDeliveryPoints] = None
+    addresses: Optional[ProfileDeliveryAddresses] = None
+    preferred_delivery_type: Optional[str] = None
+
+
+@dataclass
+class ProfilePersonal:
+    """Personal information from user profile."""
+
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    email_verified: bool = False
+    phone_number: Optional[str] = None
+    phone_number_prefix: Optional[str] = None
+
+
+@dataclass
+class UserProfile:
+    """User profile from InPost API."""
+
+    personal: Optional[ProfilePersonal] = None
+    delivery: Optional[ProfileDelivery] = None
+    shopping_active: bool = False
+
+    def get_favorite_locker_codes(self) -> List[str]:
+        """Get list of favorite/active locker codes.
+
+        Returns:
+            List of locker codes that are active, with preferred ones first.
+        """
+        if not self.delivery or not self.delivery.points:
+            return []
+
+        # Sort: preferred first, then active ones
+        points = sorted(
+            self.delivery.points.items,
+            key=lambda p: (not p.preferred, not p.active),
+        )
+
+        return [p.name for p in points if p.active]
 
 
 # =============================================================================

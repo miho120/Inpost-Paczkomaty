@@ -6,7 +6,6 @@ from typing import Dict, List, Optional
 from dacite import Config, from_dict
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from custom_components.inpost_paczkomaty.const import (
     API_BASE_URL,
@@ -26,7 +25,16 @@ from custom_components.inpost_paczkomaty.models import (
     InPostParcelLocker,
     Locker,
     ParcelsSummary,
+    ProfileDelivery,
+    ProfileDeliveryAddress,
+    ProfileDeliveryAddressData,
+    ProfileDeliveryAddressDetails,
+    ProfileDeliveryAddresses,
+    ProfileDeliveryPoint,
+    ProfileDeliveryPoints,
+    ProfilePersonal,
     TrackedParcelsResponse,
+    UserProfile,
 )
 from custom_components.inpost_paczkomaty.utils import (
     convert_keys_to_snake_case,
@@ -40,6 +48,7 @@ class InPostApiClient:
     """Client for official InPost API using Bearer token authentication."""
 
     PARCELS_ENDPOINT = "/v4/parcels/tracked"
+    PROFILE_ENDPOINT = "/izi/app/shopping/v2/profile"
 
     def __init__(
         self,
@@ -109,6 +118,64 @@ class InPostApiClient:
 
         return self._build_parcels_summary(tracked_response.parcels)
 
+    async def get_profile(self) -> UserProfile:
+        """Get user profile with favorite lockers.
+
+        Returns:
+            UserProfile with delivery points and personal info.
+
+        Raises:
+            ApiClientError: If API request fails.
+        """
+        response = await self._http_client.get(
+            url=f"{API_BASE_URL}{self.PROFILE_ENDPOINT}",
+            custom_headers={
+                # without this InPost API returns 500 Internal Server Error
+                "User-Agent": "InPost-Mobile/4.4.2 (1)-release (iOS 26.2; iPhone15,3; pl)",
+            },
+        )
+
+        if response.is_error:
+            _LOGGER.error("Profile API request failed with status %d", response.status)
+            raise ApiClientError(
+                f"Error fetching profile from InPost API! Status: {response.status}"
+            )
+
+        # Convert camelCase keys to snake_case
+        converted_data = convert_keys_to_snake_case(response.body)
+
+        # Parse response using dacite
+        dacite_config = Config(
+            type_hooks={
+                ProfilePersonal: lambda d: from_dict(
+                    ProfilePersonal, d, config=Config()
+                ),
+                ProfileDelivery: lambda d: from_dict(
+                    ProfileDelivery, d, config=Config()
+                ),
+                ProfileDeliveryPoints: lambda d: from_dict(
+                    ProfileDeliveryPoints, d, config=Config()
+                ),
+                ProfileDeliveryPoint: lambda d: from_dict(
+                    ProfileDeliveryPoint, d, config=Config()
+                ),
+                ProfileDeliveryAddresses: lambda d: from_dict(
+                    ProfileDeliveryAddresses, d, config=Config()
+                ),
+                ProfileDeliveryAddress: lambda d: from_dict(
+                    ProfileDeliveryAddress, d, config=Config()
+                ),
+                ProfileDeliveryAddressData: lambda d: from_dict(
+                    ProfileDeliveryAddressData, d, config=Config()
+                ),
+                ProfileDeliveryAddressDetails: lambda d: from_dict(
+                    ProfileDeliveryAddressDetails, d, config=Config()
+                ),
+            }
+        )
+
+        return from_dict(UserProfile, converted_data, config=dacite_config)
+
     def _build_parcels_summary(self, parcels: List[ApiParcel]) -> ParcelsSummary:
         """Build ParcelsSummary from list of parcels.
 
@@ -163,12 +230,18 @@ CustomInpostApi = InPostApiClient
 
 
 class InPostApi:
-    """Legacy API client for InPost parcel locker locations."""
+    """API client for InPost parcel locker locations (public endpoint)."""
+
+    PARCEL_LOCKERS_URL = "https://inpost.pl/sites/default/files/points.json"
 
     def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize the legacy API client."""
+        """Initialize the API client."""
         self.hass = hass
-        self.session = async_create_clientsession(hass)
+        self._http_client = HttpClient(
+            custom_headers={
+                "Accept": "application/json",
+            }
+        )
 
     async def get_parcel_lockers_list(self) -> list[InPostParcelLocker]:
         """Get parcel lockers list from public InPost endpoint.
@@ -180,25 +253,36 @@ class InPostApi:
             ApiClientError: If API request fails.
         """
         try:
-            async with self.session.get(
-                "https://inpost.pl/sites/default/files/points.json"
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
+            response = await self._http_client.get(url=self.PARCEL_LOCKERS_URL)
 
-                # Parse response
-                from dataclasses import dataclass
+            if response.is_error:
+                _LOGGER.error(
+                    "Parcel lockers API request failed with status %d",
+                    response.status,
+                )
+                raise ApiClientError(
+                    f"Error fetching parcel lockers! Status: {response.status}"
+                )
 
-                @dataclass
-                class ParcelLockerListResponse:
-                    date: str
-                    page: int
-                    total_pages: int
-                    items: list[InPostParcelLocker]
+            # Parse response
+            from dataclasses import dataclass
 
-                response_data = from_dict(ParcelLockerListResponse, data)
-                return response_data.items
+            @dataclass
+            class ParcelLockerListResponse:
+                date: str
+                page: int
+                total_pages: int
+                items: list[InPostParcelLocker]
 
+            response_data = from_dict(ParcelLockerListResponse, response.body)
+            return response_data.items
+
+        except ApiClientError:
+            raise
         except Exception as exception:
             _LOGGER.error("Error fetching parcel lockers: %s", exception)
             raise ApiClientError("Error communicating with InPost API!") from exception
+
+    async def close(self) -> None:
+        """Close the HTTP client session."""
+        await self._http_client.close()

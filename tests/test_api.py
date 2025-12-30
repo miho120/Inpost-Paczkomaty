@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_socket
 
 from custom_components.inpost_paczkomaty.api import (
     InPostApi,
@@ -17,6 +16,7 @@ from custom_components.inpost_paczkomaty.models import (
     HttpResponse,
     Locker,
     ParcelsSummary,
+    UserProfile,
 )
 
 
@@ -102,6 +102,60 @@ def sample_api_response_snake_case(sample_api_response):
     from custom_components.inpost_paczkomaty.utils import convert_keys_to_snake_case
 
     return convert_keys_to_snake_case(sample_api_response)
+
+
+@pytest.fixture
+def sample_profile_response():
+    """Sample InPost profile API response data."""
+    return {
+        "personal": {
+            "firstName": "Mykola",
+            "lastName": "Mykhalov",
+            "email": "test@example.com",
+            "emailVerified": True,
+            "phoneNumber": "575875127",
+            "phoneNumberPrefix": "+48",
+        },
+        "delivery": {
+            "points": {
+                "items": [
+                    {
+                        "name": "GDA145M",
+                        "type": "PL",
+                        "addressLines": [
+                            "Rakoczego 13",
+                            "Przy sklepie Netto",
+                            "80-288 Gdańsk",
+                        ],
+                        "active": True,
+                    },
+                    {
+                        "name": "GDA03B",
+                        "type": "PL",
+                        "addressLines": [
+                            "Rakoczego 15",
+                            "Stacja paliw BP",
+                            "80-288 Gdańsk",
+                        ],
+                        "active": False,
+                    },
+                    {
+                        "name": "GDA117M",
+                        "type": "PL",
+                        "addressLines": [
+                            "Wieżycka 8",
+                            "obiekt mieszkalny",
+                            "80-180 Gdańsk",
+                        ],
+                        "active": True,
+                        "preferred": True,
+                    },
+                ]
+            },
+            "preferredDeliveryType": "BOX_MACHINE",
+        },
+        "shoppingActive": True,
+    }
 
 
 # =============================================================================
@@ -193,6 +247,79 @@ class TestInPostApiClient:
         ) as mock_close:
             await client.close()
             mock_close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_profile_success(
+        self, mock_hass, mock_config_entry, sample_profile_response
+    ):
+        """Test successful profile retrieval."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        mock_response = HttpResponse(
+            body=sample_profile_response,
+            status=200,
+        )
+
+        with patch.object(
+            client._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+
+            result = await client.get_profile()
+
+            assert isinstance(result, UserProfile)
+            assert result.shopping_active is True
+            assert result.personal is not None
+            assert result.personal.first_name == "Mykola"
+            assert result.delivery is not None
+            assert result.delivery.points is not None
+            assert len(result.delivery.points.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_get_profile_favorite_lockers(
+        self, mock_hass, mock_config_entry, sample_profile_response
+    ):
+        """Test extracting favorite lockers from profile."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        mock_response = HttpResponse(
+            body=sample_profile_response,
+            status=200,
+        )
+
+        with patch.object(
+            client._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+
+            result = await client.get_profile()
+            favorites = result.get_favorite_locker_codes()
+
+            # Should have 2 active lockers with preferred first
+            assert len(favorites) == 2
+            assert favorites[0] == "GDA117M"  # Preferred
+            assert "GDA145M" in favorites
+            assert "GDA03B" not in favorites  # Inactive
+
+    @pytest.mark.asyncio
+    async def test_get_profile_api_error(self, mock_hass, mock_config_entry):
+        """Test profile API error handling."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        mock_response = HttpResponse(
+            body={"error": "Unauthorized"},
+            status=401,
+        )
+
+        with patch.object(
+            client._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+
+            with pytest.raises(ApiClientError) as exc_info:
+                await client.get_profile()
+
+            assert "Status: 401" in str(exc_info.value)
 
 
 class TestBuildParcelsSummary:
@@ -304,23 +431,133 @@ class TestBuildParcelsSummary:
 
 
 # =============================================================================
-# InPostApi (Legacy) Tests
+# InPostApi (Parcel Lockers) Tests
 # =============================================================================
 
 
-@pytest.fixture()
-def _allow_inpost_requests():
-    """Allow network requests to inpost.pl for integration tests."""
-    pytest_socket.enable_socket()
-    pytest_socket.socket_allow_hosts(["inpost.pl"])
+@pytest.fixture
+def sample_parcel_lockers_response():
+    """Sample parcel lockers API response."""
+    return {
+        "date": "2025-01-01",
+        "page": 1,
+        "total_pages": 1,
+        "items": [
+            {
+                "n": "GDA117M",
+                "t": 1,
+                "d": "obiekt mieszkalny",
+                "m": "Gdańsk",
+                "q": 0,
+                "f": "24/7",
+                "c": "80-180",
+                "g": "pomorskie",
+                "e": "PL",
+                "r": "Wieżycka",
+                "o": "8",
+                "b": "",
+                "h": "",
+                "i": "",
+                "l": {"a": 54.3188, "o": 18.58508},
+                "p": 1,
+                "s": 1,
+            },
+            {
+                "n": "GDA145M",
+                "t": 1,
+                "d": "Przy sklepie Netto",
+                "m": "Gdańsk",
+                "q": 0,
+                "f": "24/7",
+                "c": "80-288",
+                "g": "pomorskie",
+                "e": "PL",
+                "r": "Rakoczego",
+                "o": "13",
+                "b": "",
+                "h": "",
+                "i": "",
+                "l": {"a": 54.4052, "o": 18.5678},
+                "p": 1,
+                "s": 1,
+            },
+        ],
+    }
 
 
-@pytest.mark.parametrize("expected_lingering_timers", [True])
-@pytest.mark.api
-async def test_parcel_lockers_list(hass, _allow_inpost_requests):
-    """Integration test for parcel lockers list endpoint."""
-    response = await InPostApi(hass).get_parcel_lockers_list()
-    assert response is not None
+class TestInPostApi:
+    """Tests for InPostApi class (parcel lockers)."""
+
+    @pytest.mark.asyncio
+    async def test_get_parcel_lockers_list_success(
+        self, mock_hass, sample_parcel_lockers_response
+    ):
+        """Test successful parcel lockers list retrieval."""
+        api = InPostApi(mock_hass)
+
+        mock_response = HttpResponse(
+            body=sample_parcel_lockers_response,
+            status=200,
+        )
+
+        with patch.object(
+            api._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+
+            result = await api.get_parcel_lockers_list()
+
+            assert len(result) == 2
+            assert result[0].n == "GDA117M"
+            assert result[0].d == "obiekt mieszkalny"
+            assert result[1].n == "GDA145M"
+            mock_get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_parcel_lockers_list_api_error(self, mock_hass):
+        """Test API error handling for parcel lockers."""
+        api = InPostApi(mock_hass)
+
+        mock_response = HttpResponse(
+            body={"error": "Server error"},
+            status=500,
+        )
+
+        with patch.object(
+            api._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+
+            with pytest.raises(ApiClientError) as exc_info:
+                await api.get_parcel_lockers_list()
+
+            assert "Status: 500" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_get_parcel_lockers_list_network_error(self, mock_hass):
+        """Test network error handling for parcel lockers."""
+        api = InPostApi(mock_hass)
+
+        with patch.object(
+            api._http_client, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.side_effect = Exception("Network error")
+
+            with pytest.raises(ApiClientError) as exc_info:
+                await api.get_parcel_lockers_list()
+
+            assert "Error communicating with InPost API!" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_close(self, mock_hass):
+        """Test client close method."""
+        api = InPostApi(mock_hass)
+
+        with patch.object(
+            api._http_client, "close", new_callable=AsyncMock
+        ) as mock_close:
+            await api.close()
+            mock_close.assert_called_once()
 
 
 # =============================================================================

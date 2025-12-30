@@ -12,7 +12,8 @@
       "phone_already_registered": "This phone number is already registered with another device.",
       "unexpected_auth_step": "Unexpected authentication step. Please restart the flow.",
       "email_not_confirmed": "Email has not been confirmed yet. Please check your email and click the confirmation link.",
-      "email_confirmation_error": "Failed to send email confirmation. Please try again."
+      "email_confirmation_error": "Failed to send email confirmation. Please try again.",
+      "cannot_fetch_lockers": "Failed to fetch parcel lockers list. You can continue without selecting lockers and configure them later in options."
     },
     "step": {
       "user": {

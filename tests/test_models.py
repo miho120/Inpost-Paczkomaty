@@ -7,6 +7,10 @@ from custom_components.inpost_paczkomaty.models import (
     AuthStep,
     AuthTokens,
     HttpResponse,
+    ProfileDelivery,
+    ProfileDeliveryPoint,
+    ProfileDeliveryPoints,
+    UserProfile,
 )
 
 
@@ -189,3 +193,152 @@ class TestAuthStep:
         requires, hashed = step.requires_email
         assert requires is False
         assert hashed is None
+
+
+# =============================================================================
+# ProfileDeliveryPoint Tests
+# =============================================================================
+
+
+class TestProfileDeliveryPoint:
+    """Tests for ProfileDeliveryPoint dataclass."""
+
+    def test_init_with_defaults(self):
+        """Test initialization with default values."""
+        point = ProfileDeliveryPoint(name="GDA117M")
+
+        assert point.name == "GDA117M"
+        assert point.type == "PL"
+        assert point.address_lines == []
+        assert point.active is True
+        assert point.preferred is False
+
+    def test_init_with_all_values(self):
+        """Test initialization with all values."""
+        point = ProfileDeliveryPoint(
+            name="GDA117M",
+            type="PL",
+            address_lines=["Wieżycka 8", "obiekt mieszkalny", "80-180 Gdańsk"],
+            active=True,
+            preferred=True,
+        )
+
+        assert point.name == "GDA117M"
+        assert point.type == "PL"
+        assert len(point.address_lines) == 3
+        assert point.active is True
+        assert point.preferred is True
+
+    def test_description_property(self):
+        """Test description property joins address lines."""
+        point = ProfileDeliveryPoint(
+            name="GDA117M",
+            address_lines=["Wieżycka 8", "obiekt mieszkalny", "80-180 Gdańsk"],
+        )
+
+        assert point.description == "Wieżycka 8, obiekt mieszkalny, 80-180 Gdańsk"
+
+    def test_description_empty_address_lines(self):
+        """Test description returns empty string for empty address lines."""
+        point = ProfileDeliveryPoint(name="GDA117M")
+        assert point.description == ""
+
+
+# =============================================================================
+# UserProfile Tests
+# =============================================================================
+
+
+class TestUserProfile:
+    """Tests for UserProfile dataclass."""
+
+    def test_init_with_defaults(self):
+        """Test initialization with default values."""
+        profile = UserProfile()
+
+        assert profile.personal is None
+        assert profile.delivery is None
+        assert profile.shopping_active is False
+
+    def test_get_favorite_locker_codes_empty(self):
+        """Test get_favorite_locker_codes returns empty list when no delivery."""
+        profile = UserProfile()
+        assert profile.get_favorite_locker_codes() == []
+
+    def test_get_favorite_locker_codes_no_points(self):
+        """Test get_favorite_locker_codes with delivery but no points."""
+        profile = UserProfile(delivery=ProfileDelivery())
+        assert profile.get_favorite_locker_codes() == []
+
+    def test_get_favorite_locker_codes_active_only(self):
+        """Test get_favorite_locker_codes returns only active lockers."""
+        points = ProfileDeliveryPoints(
+            items=[
+                ProfileDeliveryPoint(name="GDA117M", active=True),
+                ProfileDeliveryPoint(name="GDA03B", active=False),
+                ProfileDeliveryPoint(name="GDA145M", active=True),
+            ]
+        )
+        profile = UserProfile(delivery=ProfileDelivery(points=points))
+
+        result = profile.get_favorite_locker_codes()
+
+        assert len(result) == 2
+        assert "GDA117M" in result
+        assert "GDA145M" in result
+        assert "GDA03B" not in result
+
+    def test_get_favorite_locker_codes_preferred_first(self):
+        """Test get_favorite_locker_codes puts preferred lockers first."""
+        points = ProfileDeliveryPoints(
+            items=[
+                ProfileDeliveryPoint(name="GDA145M", active=True, preferred=False),
+                ProfileDeliveryPoint(name="GDA03B", active=True, preferred=False),
+                ProfileDeliveryPoint(name="GDA117M", active=True, preferred=True),
+            ]
+        )
+        profile = UserProfile(delivery=ProfileDelivery(points=points))
+
+        result = profile.get_favorite_locker_codes()
+
+        assert len(result) == 3
+        # Preferred should be first
+        assert result[0] == "GDA117M"
+
+    def test_get_favorite_locker_codes_full_scenario(self):
+        """Test get_favorite_locker_codes with realistic data."""
+        points = ProfileDeliveryPoints(
+            items=[
+                ProfileDeliveryPoint(
+                    name="GDA145M",
+                    type="PL",
+                    address_lines=[
+                        "Rakoczego 13",
+                        "Przy sklepie Netto",
+                        "80-288 Gdańsk",
+                    ],
+                    active=True,
+                    preferred=False,
+                ),
+                ProfileDeliveryPoint(
+                    name="GDA03B",
+                    type="PL",
+                    address_lines=["Rakoczego 15", "Stacja paliw BP", "80-288 Gdańsk"],
+                    active=False,
+                    preferred=False,
+                ),
+                ProfileDeliveryPoint(
+                    name="GDA117M",
+                    type="PL",
+                    address_lines=["Wieżycka 8", "obiekt mieszkalny", "80-180 Gdańsk"],
+                    active=True,
+                    preferred=True,
+                ),
+            ]
+        )
+        profile = UserProfile(delivery=ProfileDelivery(points=points))
+
+        result = profile.get_favorite_locker_codes()
+
+        # Should have 2 active lockers, with preferred first
+        assert result == ["GDA117M", "GDA145M"]

@@ -119,6 +119,7 @@ class HttpClient:
         json: Optional[dict] = None,
         data: Optional[dict] = None,
         timeout: Optional[int] = 30,
+        custom_headers: Optional[dict] = None,
     ) -> HttpResponse:
         """
         Execute an HTTP request.
@@ -139,7 +140,8 @@ class HttpClient:
         """
         session = await self._ensure_session()
         _LOGGER.debug("Making %s request to %s", method, url)
-
+        headers = {**self.headers, **(custom_headers or {})}
+        _LOGGER.debug("Headers: %s", headers)
         try:
             async with asyncio.timeout(timeout):
                 async with session.request(
@@ -149,6 +151,7 @@ class HttpClient:
                     json=json,
                     data=data,
                     allow_redirects=False,
+                    headers=headers,
                 ) as response:
                     try:
                         body = await response.json()
@@ -169,7 +172,7 @@ class HttpClient:
             _LOGGER.error("Error making request: %s", e)
             raise e
 
-    async def get(self, url: str, params: Optional[dict] = None) -> HttpResponse:
+    async def get(self, url: str, params: Optional[dict] = None, custom_headers: Optional[dict] = None) -> HttpResponse:
         """
         Execute a GET request.
 
@@ -180,10 +183,10 @@ class HttpClient:
         Returns:
             HttpResponse dataclass with response data.
         """
-        return await self._request("GET", url, params=params)
+        return await self._request("GET", url, params=params, custom_headers=custom_headers)
 
     async def post(
-        self, url: str, json: Optional[dict] = None, data: Optional[dict] = None
+        self, url: str, json: Optional[dict] = None, data: Optional[dict] = None, custom_headers: Optional[dict] = None
     ) -> HttpResponse:
         """
         Execute a POST request.
@@ -196,7 +199,7 @@ class HttpClient:
         Returns:
             HttpResponse dataclass with response data.
         """
-        return await self._request("POST", url, json=json, data=data)
+        return await self._request("POST", url, json=json, data=data, custom_headers=custom_headers)
 
     async def close(self) -> None:
         """Close the HTTP session."""

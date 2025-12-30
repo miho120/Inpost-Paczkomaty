@@ -245,7 +245,7 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _complete_authentication(self):
-        """Complete authentication and create config entry."""
+        """Complete authentication and proceed to locker selection."""
         try:
             if not self._auth:
                 _LOGGER.error("Authentication session not found")
@@ -268,13 +268,8 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Clean up auth session
             await self._cleanup_auth()
 
-            # Create the config entry
-            phone_number = self._data.get(ENTRY_PHONE_NUMBER_CONFIG, "")
-            return self.async_create_entry(
-                title=f"InPost: +48 {phone_number}",
-                data=self._data,
-                options={},
-            )
+            # Proceed to locker selection step
+            return await self.async_step_lockers()
 
         except InPostApiError as e:
             _LOGGER.error("Failed to get tokens: %s", e)
@@ -286,24 +281,82 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self._cleanup_auth()
             return self.async_abort(reason="token_exchange_failed")
 
+    async def _get_favorite_lockers(self) -> list[str]:
+        """Fetch favorite lockers from user profile.
+
+        Returns:
+            List of favorite locker codes, or empty list if unavailable.
+        """
+        from .api import InPostApiClient
+
+        try:
+            # Create a temporary API client with the access token
+            class TempEntry:
+                data = {CONF_ACCESS_TOKEN: self._data.get(CONF_ACCESS_TOKEN)}
+
+            api_client = InPostApiClient(
+                self.hass,
+                TempEntry(),
+                access_token=self._data.get(CONF_ACCESS_TOKEN),
+            )
+
+            profile = await api_client.get_profile()
+            await api_client.close()
+
+            favorite_lockers = profile.get_favorite_locker_codes()
+            _LOGGER.info(
+                "Found %d favorite lockers from profile", len(favorite_lockers)
+            )
+            return favorite_lockers
+
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch favorite lockers: %s", e)
+            return []
+
     async def async_step_lockers(self, user_input=None):
         """Handle parcel locker selection step."""
         from .api import InPostApi
+        from .exceptions import ApiClientError
 
-        parcel_lockers = [
-            SimpleParcelLocker(
-                code=locker.n,
-                description=locker.d,
-                distance=haversine(
-                    self.hass.config.longitude,
-                    self.hass.config.latitude,
-                    locker.l.o,
-                    locker.l.a,
-                ),
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # User submitted locker selection - create the config entry
+            phone_number = self._data.get(ENTRY_PHONE_NUMBER_CONFIG, "")
+            return self.async_create_entry(
+                title=f"InPost: +48 {phone_number}",
+                data=self._data,
+                options={"lockers": user_input.get("lockers", [])},
             )
-            for locker in await InPostApi(self.hass).get_parcel_lockers_list()
-        ]
 
+        # Fetch all available parcel lockers
+        parcel_lockers: list[SimpleParcelLocker] = []
+        api_client = InPostApi(self.hass)
+        try:
+            parcel_lockers = [
+                SimpleParcelLocker(
+                    code=locker.n,
+                    description=locker.d,
+                    distance=haversine(
+                        self.hass.config.longitude,
+                        self.hass.config.latitude,
+                        locker.l.o,
+                        locker.l.a,
+                    ),
+                )
+                for locker in await api_client.get_parcel_lockers_list()
+            ]
+        except ApiClientError as e:
+            _LOGGER.error("Failed to fetch parcel lockers: %s", e)
+            errors["base"] = "cannot_fetch_lockers"
+        except Exception as e:
+            _LOGGER.exception("Unexpected error fetching parcel lockers: %s", e)
+            errors["base"] = "cannot_fetch_lockers"
+        finally:
+            await api_client.close()
+
+        # Build options sorted by distance
+        locker_codes = {locker.code for locker in parcel_lockers}
         options = [
             SelectOptionDict(
                 label=f"{locker.code} [{locker.distance:.2f}km] ({locker.description})",
@@ -312,20 +365,19 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for locker in sorted(parcel_lockers, key=lambda locker: locker.distance)
         ]
 
-        if user_input is not None:
-            return self.async_create_entry(
-                title=self._data[ENTRY_PHONE_NUMBER_CONFIG],
-                data={},
-                options=user_input,
-            )
+        # Get favorite lockers from profile API for pre-selection
+        favorite_lockers = await self._get_favorite_lockers()
+
+        # Filter to only include lockers that exist in the options
+        default_lockers = [code for code in favorite_lockers if code in locker_codes]
 
         return self.async_show_form(
             step_id="lockers",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
+                    vol.Optional(
                         "lockers",
-                        default=[],
+                        default=default_lockers,
                     ): SelectSelector(
                         SelectSelectorConfig(
                             options=options,
@@ -336,6 +388,7 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
+            errors=errors,
         )
 
     @staticmethod
@@ -355,20 +408,41 @@ class InPostOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Show the list of lockers fetched by coordinator."""
         from .api import InPostApi
+        from .exceptions import ApiClientError
 
-        parcel_lockers = [
-            SimpleParcelLocker(
-                code=locker.n,
-                description=locker.d,
-                distance=haversine(
-                    self.hass.config.longitude,
-                    self.hass.config.latitude,
-                    locker.l.o,
-                    locker.l.a,
-                ),
-            )
-            for locker in await InPostApi(self.hass).get_parcel_lockers_list()
-        ]
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self.hass.config_entries.async_update_entry(self.entry, options=user_input)
+            await self.hass.config_entries.async_reload(self.entry.entry_id)
+
+            return self.async_create_entry(title="", data=user_input)
+
+        # Fetch parcel lockers with error handling
+        parcel_lockers: list[SimpleParcelLocker] = []
+        api_client = InPostApi(self.hass)
+        try:
+            parcel_lockers = [
+                SimpleParcelLocker(
+                    code=locker.n,
+                    description=locker.d,
+                    distance=haversine(
+                        self.hass.config.longitude,
+                        self.hass.config.latitude,
+                        locker.l.o,
+                        locker.l.a,
+                    ),
+                )
+                for locker in await api_client.get_parcel_lockers_list()
+            ]
+        except ApiClientError as e:
+            _LOGGER.error("Failed to fetch parcel lockers: %s", e)
+            errors["base"] = "cannot_fetch_lockers"
+        except Exception as e:
+            _LOGGER.exception("Unexpected error fetching parcel lockers: %s", e)
+            errors["base"] = "cannot_fetch_lockers"
+        finally:
+            await api_client.close()
 
         # Build options for SelectSelector
         options = [
@@ -382,17 +456,11 @@ class InPostOptionsFlow(config_entries.OptionsFlow):
         # Default selection = previously selected ones
         current = self.entry.options.get("lockers", [])
 
-        if user_input is not None:
-            self.hass.config_entries.async_update_entry(self.entry, options=user_input)
-            await self.hass.config_entries.async_reload(self.entry.entry_id)
-
-            return self.async_create_entry(title="", data=user_input)
-
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
+                    vol.Optional(
                         "lockers",
                         default=current,
                     ): SelectSelector(
@@ -405,4 +473,5 @@ class InPostOptionsFlow(config_entries.OptionsFlow):
                     ),
                 }
             ),
+            errors=errors,
         )

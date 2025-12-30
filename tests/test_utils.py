@@ -1,7 +1,5 @@
 """Tests for utility functions."""
 
-import pytest
-
 from custom_components.inpost_paczkomaty.utils import (
     camel_to_snake,
     convert_keys_to_snake_case,
