@@ -17,3 +17,15 @@ def haversine(lon1, lat1, lon2, lat2):
     km = 6371 * c
 
     return km
+
+
+def get_language_code(language: str = None) -> str:
+    """
+    Get the language code for the given language.
+    """
+    language_codes = {
+        "pl": "pl-PL",
+        "en": "en-US",
+        "__default__": "en-US",
+    }
+    return language_codes.get(language, language_codes["__default__"])

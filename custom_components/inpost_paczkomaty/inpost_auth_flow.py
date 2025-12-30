@@ -14,11 +14,12 @@ import logging
 import os
 import re
 import time
+import aiohttp
 from dataclasses import dataclass, field
 from typing import Any, Optional
-
-import aiohttp
 from aiohttp.resolver import ThreadedResolver
+
+from .utils import get_language_code
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -590,11 +591,12 @@ class InpostAuth:
 
     def __init__(self, language: str = "pl") -> None:
         """Initialize the InPost authentication handler."""
+        self._language = language
+        self._language_code = get_language_code(language)
         self._http_client = HttpClient(
-            custom_headers={"Accept-Language": "pl-PL" if language == "pl" else "en-US"}
+            custom_headers={"Accept-Language": self._language_code}
         )
         self._flow_state = self._generate_random_hex(8)
-        self._language = language
         self._code_verifier = self._generate_code_verifier()
         _LOGGER.debug("InpostAuth initialized with flow state: %s", self._flow_state)
 
@@ -695,7 +697,7 @@ class InpostAuth:
             _LOGGER.debug("XSRF token set successfully")
 
         # Set locale cookie for Polish language
-        self._http_client.update_cookies({"NEXT_LOCALE": "pl-PL"})
+        self._http_client.update_cookies({"NEXT_LOCALE": self._language_code})
 
         step = response.body.get("step", "") if isinstance(response.body, dict) else ""
         _LOGGER.info("Current step: %s", step)
