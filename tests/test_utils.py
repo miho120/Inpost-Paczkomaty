@@ -1,10 +1,16 @@
 """Tests for utility functions."""
 
+import base64
+import json
+import time
+
 from custom_components.inpost_paczkomaty.utils import (
     camel_to_snake,
     convert_keys_to_snake_case,
+    decode_jwt_payload,
     get_language_code,
     haversine,
+    is_token_expiring_soon,
 )
 
 
@@ -167,3 +173,177 @@ class TestHaversine:
 
         # Should be around 1-2 km
         assert 0.5 < result < 2.0
+
+
+def _create_jwt_token(payload: dict) -> str:
+    """Helper to create a JWT token for testing."""
+    # JWT consists of header.payload.signature
+    header = {"alg": "RS256", "kid": "test-key"}
+    header_b64 = (
+        base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+    )
+    payload_b64 = (
+        base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    )
+    # Signature doesn't matter for our tests
+    signature = "fake_signature"
+    return f"{header_b64}.{payload_b64}.{signature}"
+
+
+class TestDecodeJwtPayload:
+    """Tests for decode_jwt_payload function."""
+
+    def test_decode_valid_token(self):
+        """Test decoding a valid JWT token."""
+        payload = {"sub": "user123", "exp": 1234567890, "iat": 1234560690}
+        token = _create_jwt_token(payload)
+
+        result = decode_jwt_payload(token)
+
+        assert result is not None
+        assert result["sub"] == "user123"
+        assert result["exp"] == 1234567890
+        assert result["iat"] == 1234560690
+
+    def test_decode_token_with_special_chars(self):
+        """Test decoding a token with special characters in payload."""
+        payload = {"name": "Mykola Михайлов", "email": "test@example.com"}
+        token = _create_jwt_token(payload)
+
+        result = decode_jwt_payload(token)
+
+        assert result is not None
+        assert result["name"] == "Mykola Михайлов"
+        assert result["email"] == "test@example.com"
+
+    def test_decode_invalid_token_format(self):
+        """Test decoding an invalid token format."""
+        assert decode_jwt_payload("invalid") is None
+        assert decode_jwt_payload("only.two") is None
+        assert decode_jwt_payload("") is None
+
+    def test_decode_token_with_invalid_base64(self):
+        """Test decoding a token with invalid base64."""
+        result = decode_jwt_payload("header.!!!invalid!!!.signature")
+        assert result is None
+
+    def test_decode_token_with_invalid_json(self):
+        """Test decoding a token with invalid JSON in payload."""
+        # Create a token with non-JSON payload
+        header_b64 = base64.urlsafe_b64encode(b'{"alg":"RS256"}').decode().rstrip("=")
+        payload_b64 = base64.urlsafe_b64encode(b"not json").decode().rstrip("=")
+        token = f"{header_b64}.{payload_b64}.signature"
+
+        result = decode_jwt_payload(token)
+        assert result is None
+
+
+class TestIsTokenExpiringSoon:
+    """Tests for is_token_expiring_soon function."""
+
+    def test_token_not_expiring(self):
+        """Test token that is not expiring soon."""
+        # Token expires in 2 hours
+        exp = int(time.time()) + 7200
+        token = _create_jwt_token({"exp": exp})
+
+        result = is_token_expiring_soon(token)
+
+        assert result is False
+
+    def test_token_expiring_within_buffer(self):
+        """Test token expiring within buffer period."""
+        # Token expires in 5 minutes (less than 10 minute buffer)
+        exp = int(time.time()) + 300
+        token = _create_jwt_token({"exp": exp})
+
+        result = is_token_expiring_soon(token)
+
+        assert result is True
+
+    def test_token_already_expired(self):
+        """Test already expired token."""
+        # Token expired 5 minutes ago
+        exp = int(time.time()) - 300
+        token = _create_jwt_token({"exp": exp})
+
+        result = is_token_expiring_soon(token)
+
+        assert result is True
+
+    def test_token_expiring_exactly_at_buffer(self):
+        """Test token expiring exactly at buffer boundary."""
+        # Token expires exactly at buffer time
+        exp = int(time.time()) + 600
+        token = _create_jwt_token({"exp": exp})
+
+        result = is_token_expiring_soon(token)
+
+        assert result is True
+
+    def test_token_expiring_just_after_buffer(self):
+        """Test token expiring just after buffer period."""
+        # Token expires 1 second after buffer
+        exp = int(time.time()) + 600 + 1
+        token = _create_jwt_token({"exp": exp})
+
+        result = is_token_expiring_soon(token)
+
+        assert result is False
+
+    def test_custom_buffer_seconds(self):
+        """Test with custom buffer seconds."""
+        # Token expires in 30 minutes
+        exp = int(time.time()) + 1800
+        token = _create_jwt_token({"exp": exp})
+
+        # With 10 minute buffer (default), should not be expiring
+        assert is_token_expiring_soon(token, buffer_seconds=600) is False
+
+        # With 60 minute buffer, should be expiring
+        assert is_token_expiring_soon(token, buffer_seconds=3600) is True
+
+    def test_token_without_exp_claim(self):
+        """Test token without expiration claim."""
+        token = _create_jwt_token({"sub": "user123"})
+
+        result = is_token_expiring_soon(token)
+
+        # Should return True (fail-safe) when no exp claim
+        assert result is True
+
+    def test_invalid_token_returns_true(self):
+        """Test invalid token returns True (fail-safe behavior)."""
+        result = is_token_expiring_soon("invalid.token")
+
+        # Should return True to trigger refresh attempt
+        assert result is True
+
+    def test_empty_token_returns_true(self):
+        """Test empty token returns True (fail-safe behavior)."""
+        result = is_token_expiring_soon("")
+
+        assert result is True
+
+    def test_real_jwt_token_format(self):
+        """Test with a token similar to real InPost JWT."""
+        # Real InPost token structure
+        payload = {
+            "market": "Poland",
+            "sub": "0631cf03-38ff-4302-8200-9c47a8ccd680",
+            "aud": "inpost-mobile",
+            "nbf": int(time.time()),
+            "phone": "575875127",
+            "azp": "inpost-mobile",
+            "scope": ["openid"],
+            "iss": "https://account.inpost-group.com",
+            "exp": int(time.time()) + 7200,  # 2 hours from now
+            "iat": int(time.time()),
+            "jti": "b3293dbc-cd39-44aa-ba88-3886fe5d641b",
+            "phone_prefix": "+48",
+        }
+        token = _create_jwt_token(payload)
+
+        result = is_token_expiring_soon(token)
+
+        assert result is False

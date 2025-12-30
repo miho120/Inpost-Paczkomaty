@@ -1,19 +1,56 @@
 """Tests for InPost API clients."""
 
+import base64
+import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from custom_components.inpost_paczkomaty.api import InPostApiClient
 from custom_components.inpost_paczkomaty.exceptions import ApiClientError
-from custom_components.inpost_paczkomaty.const import CONF_ACCESS_TOKEN
+from custom_components.inpost_paczkomaty.const import (
+    CONF_ACCESS_TOKEN,
+    CONF_REFRESH_TOKEN,
+)
 from custom_components.inpost_paczkomaty.models import (
     ApiParcel,
     ApiPickUpPoint,
+    AuthTokens,
     HttpResponse,
     ParcelsSummary,
     UserProfile,
 )
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+def _create_jwt_token(exp_offset_seconds: int = 7200) -> str:
+    """Create a JWT token for testing with given expiration offset.
+
+    Args:
+        exp_offset_seconds: Seconds from now until token expires.
+                          Positive = expires in future, negative = already expired.
+
+    Returns:
+        A valid JWT token string.
+    """
+    header = {"alg": "RS256", "kid": "test-key"}
+    payload = {
+        "sub": "user123",
+        "exp": int(time.time()) + exp_offset_seconds,
+        "iat": int(time.time()),
+    }
+    header_b64 = (
+        base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+    )
+    payload_b64 = (
+        base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    )
+    return f"{header_b64}.{payload_b64}.fake_signature"
 
 
 # =============================================================================
@@ -22,8 +59,42 @@ from custom_components.inpost_paczkomaty.models import (
 
 
 @pytest.fixture
-def mock_config_entry():
+def valid_access_token():
+    """Create a valid access token that won't expire soon."""
+    return _create_jwt_token(exp_offset_seconds=7200)  # 2 hours
+
+
+@pytest.fixture
+def expiring_access_token():
+    """Create an access token that is about to expire."""
+    return _create_jwt_token(exp_offset_seconds=300)  # 5 minutes
+
+
+@pytest.fixture
+def mock_config_entry(valid_access_token):
     """Create a mock config entry with access token."""
+    entry = MagicMock()
+    entry.data = {
+        CONF_ACCESS_TOKEN: valid_access_token,
+        CONF_REFRESH_TOKEN: "test_refresh_token",
+    }
+    return entry
+
+
+@pytest.fixture
+def mock_config_entry_expiring_token(expiring_access_token):
+    """Create a mock config entry with expiring access token."""
+    entry = MagicMock()
+    entry.data = {
+        CONF_ACCESS_TOKEN: expiring_access_token,
+        CONF_REFRESH_TOKEN: "test_refresh_token",
+    }
+    return entry
+
+
+@pytest.fixture
+def mock_config_entry_no_refresh():
+    """Create a mock config entry without refresh token."""
     entry = MagicMock()
     entry.data = {CONF_ACCESS_TOKEN: "test_access_token"}
     return entry
@@ -322,6 +393,281 @@ class TestInPostApiClient:
                 await client.get_profile()
 
             assert "Status: 401" in str(exc_info.value)
+
+
+# =============================================================================
+# Token Refresh Tests
+# =============================================================================
+
+
+class TestTokenRefresh:
+    """Tests for token refresh functionality."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_success(self, mock_hass, mock_config_entry):
+        """Test successful token refresh."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        new_access_token = _create_jwt_token(7200)
+        mock_response = HttpResponse(
+            body={
+                "access_token": new_access_token,
+                "refresh_token": "new_refresh_token",
+                "token_type": "Bearer",
+                "expires_in": 7199,
+                "scope": "openid",
+                "id_token": "new_id_token",
+            },
+            status=200,
+        )
+
+        with patch.object(
+            client._public_http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
+            mock_post.return_value = mock_response
+
+            result = await client.refresh_access_token()
+
+            assert isinstance(result, AuthTokens)
+            assert result.access_token == new_access_token
+            assert result.refresh_token == "new_refresh_token"
+            assert result.token_type == "Bearer"
+            assert result.expires_in == 7199
+            assert client._access_token == new_access_token
+            assert client._refresh_token == "new_refresh_token"
+            mock_post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_updates_http_client_headers(
+        self, mock_hass, mock_config_entry
+    ):
+        """Test that token refresh updates HTTP client authorization header."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        new_access_token = _create_jwt_token(7200)
+        mock_response = HttpResponse(
+            body={
+                "access_token": new_access_token,
+                "refresh_token": "new_refresh_token",
+            },
+            status=200,
+        )
+
+        with patch.object(
+            client._public_http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
+            mock_post.return_value = mock_response
+
+            with patch.object(
+                client._http_client, "update_headers"
+            ) as mock_update_headers:
+                await client.refresh_access_token()
+
+                mock_update_headers.assert_called_once_with(
+                    {"Authorization": f"Bearer {new_access_token}"}
+                )
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_calls_callback(
+        self, mock_hass, mock_config_entry
+    ):
+        """Test that token refresh calls the callback if set."""
+        callback_mock = MagicMock()
+        client = InPostApiClient(
+            mock_hass, mock_config_entry, on_token_refresh=callback_mock
+        )
+
+        new_access_token = _create_jwt_token(7200)
+        mock_response = HttpResponse(
+            body={
+                "access_token": new_access_token,
+                "refresh_token": "new_refresh_token",
+            },
+            status=200,
+        )
+
+        with patch.object(
+            client._public_http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
+            mock_post.return_value = mock_response
+
+            await client.refresh_access_token()
+
+            callback_mock.assert_called_once()
+            args = callback_mock.call_args[0]
+            assert isinstance(args[0], AuthTokens)
+            assert args[0].access_token == new_access_token
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_api_error(self, mock_hass, mock_config_entry):
+        """Test token refresh API error handling."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        mock_response = HttpResponse(
+            body={"error": "invalid_grant"},
+            status=400,
+        )
+
+        with patch.object(
+            client._public_http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
+            mock_post.return_value = mock_response
+
+            with pytest.raises(ApiClientError) as exc_info:
+                await client.refresh_access_token()
+
+            assert "Status: 400" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_no_refresh_token(self, mock_hass):
+        """Test token refresh without refresh token raises error."""
+        entry = MagicMock()
+        entry.data = {CONF_ACCESS_TOKEN: "test_access_token"}
+        client = InPostApiClient(mock_hass, entry)
+
+        with pytest.raises(ApiClientError) as exc_info:
+            await client.refresh_access_token()
+
+        assert "No refresh token available" in str(exc_info.value)
+
+
+class TestTokenAutoRefresh:
+    """Tests for automatic token refresh before API requests."""
+
+    @pytest.mark.asyncio
+    async def test_get_parcels_refreshes_expiring_token(
+        self, mock_hass, mock_config_entry_expiring_token, sample_api_response
+    ):
+        """Test that get_parcels refreshes an expiring token."""
+        client = InPostApiClient(mock_hass, mock_config_entry_expiring_token)
+
+        new_access_token = _create_jwt_token(7200)
+        refresh_response = HttpResponse(
+            body={
+                "access_token": new_access_token,
+                "refresh_token": "new_refresh_token",
+            },
+            status=200,
+        )
+        parcels_response = HttpResponse(
+            body=sample_api_response,
+            status=200,
+        )
+
+        with (
+            patch.object(
+                client._public_http_client, "post", new_callable=AsyncMock
+            ) as mock_post,
+            patch.object(
+                client._http_client, "get", new_callable=AsyncMock
+            ) as mock_get,
+        ):
+            mock_post.return_value = refresh_response
+            mock_get.return_value = parcels_response
+
+            result = await client.get_parcels()
+
+            # Token should be refreshed
+            mock_post.assert_called_once()
+            assert isinstance(result, ParcelsSummary)
+
+    @pytest.mark.asyncio
+    async def test_get_parcels_no_refresh_for_valid_token(
+        self, mock_hass, mock_config_entry, sample_api_response
+    ):
+        """Test that get_parcels does not refresh a valid token."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        parcels_response = HttpResponse(
+            body=sample_api_response,
+            status=200,
+        )
+
+        with (
+            patch.object(
+                client._public_http_client, "post", new_callable=AsyncMock
+            ) as mock_post,
+            patch.object(
+                client._http_client, "get", new_callable=AsyncMock
+            ) as mock_get,
+        ):
+            mock_get.return_value = parcels_response
+
+            result = await client.get_parcels()
+
+            # Token should NOT be refreshed
+            mock_post.assert_not_called()
+            assert isinstance(result, ParcelsSummary)
+
+    @pytest.mark.asyncio
+    async def test_get_profile_refreshes_expiring_token(
+        self, mock_hass, mock_config_entry_expiring_token, sample_profile_response
+    ):
+        """Test that get_profile refreshes an expiring token."""
+        client = InPostApiClient(mock_hass, mock_config_entry_expiring_token)
+
+        new_access_token = _create_jwt_token(7200)
+        refresh_response = HttpResponse(
+            body={
+                "access_token": new_access_token,
+                "refresh_token": "new_refresh_token",
+            },
+            status=200,
+        )
+        profile_response = HttpResponse(
+            body=sample_profile_response,
+            status=200,
+        )
+
+        with (
+            patch.object(
+                client._public_http_client, "post", new_callable=AsyncMock
+            ) as mock_post,
+            patch.object(
+                client._http_client, "get", new_callable=AsyncMock
+            ) as mock_get,
+        ):
+            mock_post.return_value = refresh_response
+            mock_get.return_value = profile_response
+
+            result = await client.get_profile()
+
+            # Token should be refreshed
+            mock_post.assert_called_once()
+            assert isinstance(result, UserProfile)
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_without_access_token(self, mock_hass):
+        """Test that no refresh is attempted without access token."""
+        entry = MagicMock()
+        entry.data = {}
+        client = InPostApiClient(mock_hass, entry)
+
+        with patch.object(
+            client._public_http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
+            # This should not trigger a refresh attempt
+            await client._ensure_valid_token()
+
+            mock_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_without_refresh_token(
+        self, mock_hass, mock_config_entry_no_refresh
+    ):
+        """Test that no refresh is attempted without refresh token."""
+        # Use an expiring token
+        entry = MagicMock()
+        entry.data = {CONF_ACCESS_TOKEN: _create_jwt_token(300)}  # Expires in 5 min
+        client = InPostApiClient(mock_hass, entry)
+
+        with patch.object(
+            client._public_http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
+            # This should not trigger a refresh attempt
+            await client._ensure_valid_token()
+
+            mock_post.assert_not_called()
 
 
 class TestBuildParcelsSummary:

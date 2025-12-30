@@ -1,7 +1,7 @@
 """Functions to connect to InPost APIs."""
 
 import logging
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from dacite import Config, from_dict
 from homeassistant.config_entries import ConfigEntry
@@ -10,6 +10,8 @@ from homeassistant.core import HomeAssistant
 from custom_components.inpost_paczkomaty.const import (
     API_BASE_URL,
     CONF_ACCESS_TOKEN,
+    CONF_REFRESH_TOKEN,
+    OAUTH_CLIENT_ID,
 )
 from custom_components.inpost_paczkomaty.exceptions import ApiClientError
 from custom_components.inpost_paczkomaty.http_client import HttpClient
@@ -21,6 +23,7 @@ from custom_components.inpost_paczkomaty.models import (
     ApiPickUpPoint,
     ApiReceiver,
     ApiSender,
+    AuthTokens,
     EN_ROUTE_STATUSES,
     InPostParcelLocker,
     Locker,
@@ -40,6 +43,7 @@ from custom_components.inpost_paczkomaty.models import (
 from custom_components.inpost_paczkomaty.utils import (
     convert_keys_to_snake_case,
     get_language_code,
+    is_token_expiring_soon,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,6 +58,7 @@ class InPostApiClient:
 
     PARCELS_ENDPOINT = "/v4/parcels/tracked"
     PROFILE_ENDPOINT = "/izi/app/shopping/v2/profile"
+    TOKEN_ENDPOINT = "/global/oauth2/token"
     PARCEL_LOCKERS_URL = "https://inpost.pl/sites/default/files/points.json"
 
     def __init__(
@@ -61,6 +66,8 @@ class InPostApiClient:
         hass: HomeAssistant,
         entry: Optional[ConfigEntry] = None,
         access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        on_token_refresh: Optional[Callable[[AuthTokens], None]] = None,
     ) -> None:
         """Initialize the InPost API client.
 
@@ -68,15 +75,19 @@ class InPostApiClient:
             hass: Home Assistant instance.
             entry: Optional config entry containing authentication data.
             access_token: Optional access token override.
+            refresh_token: Optional refresh token override.
+            on_token_refresh: Optional callback when token is refreshed.
         """
         self.hass = hass
         data = entry.data if entry and entry.data else {}
-        token = access_token or data.get(CONF_ACCESS_TOKEN)
+        self._access_token = access_token or data.get(CONF_ACCESS_TOKEN)
+        self._refresh_token = refresh_token or data.get(CONF_REFRESH_TOKEN)
+        self._on_token_refresh = on_token_refresh
 
         # Authenticated client for InPost mobile API
         self._http_client = HttpClient(
-            auth_type="Bearer" if token else None,
-            auth_value=token,
+            auth_type="Bearer" if self._access_token else None,
+            auth_value=self._access_token,
             custom_headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
@@ -91,6 +102,88 @@ class InPostApiClient:
             }
         )
 
+    async def _ensure_valid_token(self) -> None:
+        """Ensure the access token is valid, refreshing if needed.
+
+        Checks if the current access token is about to expire and
+        refreshes it using the refresh token if necessary.
+
+        Raises:
+            ApiClientError: If token refresh fails.
+        """
+        if not self._access_token:
+            return
+
+        if not is_token_expiring_soon(self._access_token):
+            return
+
+        if not self._refresh_token:
+            _LOGGER.warning("Access token is expiring but no refresh token available")
+            return
+
+        _LOGGER.info("Access token is expiring soon, refreshing...")
+        await self.refresh_access_token()
+
+    async def refresh_access_token(self) -> AuthTokens:
+        """Refresh the access token using the refresh token.
+
+        Returns:
+            AuthTokens with new access and refresh tokens.
+
+        Raises:
+            ApiClientError: If token refresh fails.
+        """
+        if not self._refresh_token:
+            raise ApiClientError("No refresh token available")
+
+        response = await self._public_http_client.post(
+            url=f"{API_BASE_URL}{self.TOKEN_ENDPOINT}",
+            data={
+                "client_id": OAUTH_CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+            },
+            custom_headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": (
+                    "InPost-Mobile/4.4.2 (1)-release (iOS 26.2; iPhone15,3; pl)"
+                ),
+            },
+        )
+
+        if response.is_error:
+            _LOGGER.error("Token refresh failed with status %d", response.status)
+            raise ApiClientError(
+                f"Error refreshing access token! Status: {response.status}"
+            )
+
+        body = response.body
+        tokens = AuthTokens(
+            access_token=body.get("access_token", ""),
+            refresh_token=body.get("refresh_token", ""),
+            token_type=body.get("token_type", "Bearer"),
+            expires_in=body.get("expires_in", 7199),
+            scope=body.get("scope", "openid"),
+            id_token=body.get("id_token"),
+        )
+
+        # Update internal state
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token
+
+        # Update HTTP client authorization header
+        self._http_client.update_headers(
+            {"Authorization": f"Bearer {tokens.access_token}"}
+        )
+
+        # Notify callback if set
+        if self._on_token_refresh:
+            self._on_token_refresh(tokens)
+
+        _LOGGER.info("Access token refreshed successfully")
+        return tokens
+
     async def get_parcels(self) -> ParcelsSummary:
         """Get tracked parcels and convert to ParcelsSummary.
 
@@ -100,6 +193,8 @@ class InPostApiClient:
         Raises:
             ApiClientError: If API request fails.
         """
+        await self._ensure_valid_token()
+
         response = await self._http_client.get(
             url=f"{API_BASE_URL}{self.PARCELS_ENDPOINT}"
         )
@@ -141,6 +236,8 @@ class InPostApiClient:
         Raises:
             ApiClientError: If API request fails.
         """
+        await self._ensure_valid_token()
+
         response = await self._http_client.get(
             url=f"{API_BASE_URL}{self.PROFILE_ENDPOINT}",
             custom_headers={
