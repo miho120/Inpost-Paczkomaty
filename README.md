@@ -8,15 +8,32 @@ configured lockers.
 
 ---
 
+~~~
+⚠️ Breaking Changes in version 0.3.0
+
+> Important: Existing users will need to re-configure the integration after updating.
+
+- OAuth2 authentication: External authentication service is no longer used
+- Config entry structure: Data structure changed; existing configurations are incompatible
+
+➡️ Migration Steps
+
+Note: Simply re-adding the integration should work for most users. Full removal (steps 1-2) is only needed if you encounter issues.
+
+1. Remove the existing InPost Paczkomaty integration from Home Assistant
+2. Restart Home Assistant
+3. Add the integration again and complete the new authentication flow
+4. Re-select your preferred parcel lockers
+~~~~
+
 ## How It Works
 
 This Home Assistant integration tracks your parcels by fetching data from InPost servers via a **relay backend server**.
 
 1. **Authentication:** You provide your **phone number** to the integration setup. You then receive an **SMS code**
-   which you also provide.
-2. **Data Flow:** This authentication data is passed to a backend server (hosted by @jakon89), which then uses it to
-   query the official InPost servers for your parcel statuses.
-3. **Polling:** Home Assistant polls the integration backend every **30 seconds** to retrieve the latest updates on your
+   which you also provide. If prompted, verify your email by clicking the link in the email sent to you by InPost (this can be done on any device).
+2. **Data Flow:** This authentication data is stored loccaly and send only to official InPost servers for authentication purposes. After succesfull authentication only API tokens are stored on you HA instance (refresh token, access token, etc).
+3. **Polling:** Home Assistant polls the InPost API every **30 seconds** to retrieve the latest updates on your
    parcels.
 
 ---
@@ -33,7 +50,8 @@ This Home Assistant integration tracks your parcels by fetching data from InPost
 6. Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Integrations** $\rightarrow$ **Add
    Integration**, and search for **InPost Paczkomaty**.
 7. Complete the setup flow by providing your phone number and the received SMS code.
-8. Select the specific parcel lockers you wish to monitor.
+8. If prompted, verify your email by clicking the link in the email sent by InPost (this can be done on any device). **Note:** This is a legitimate verification email - it will **not** ask for any credentials. Once verified, click `Submit` to proceed.
+9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically.
 
 ### Manual Installation
 
@@ -43,7 +61,56 @@ This Home Assistant integration tracks your parcels by fetching data from InPost
 3. **Restart Home Assistant**.
 4. Execute steps **6, 7, and 8** from the HACS installation method above.
 
----
+## Usage Examples
+
+### Dashboard panel
+
+Display parcel counts directly on your Home Assistant dashboard to see at a glance how many packages are waiting for pickup. This is especially handy if you have a dashboard near your door—check whether a trip to the Paczkomat® is needed before heading out.
+
+**Markdown panel example:**
+
+![Markdown panel example](docs/img/markdown-panel-example.png)
+
+```text
+# 📦 Parcels waiting: {{ (states('sensor.inpost_123456789_ready_for_pickup_parcels_count') | int) + (states('sensor.inpost_987654321_ready_for_pickup_parcels_count') | int) }}
+## 🙋‍♀️ Wife: {{ states('sensor.inpost_987654321_ready_for_pickup_parcels_count') }}
+## 🙋‍♂️ Husband: {{ states('sensor.inpost_123456789_ready_for_pickup_parcels_count') }}
+```
+
+#### Parcels ready for pick up notification
+
+Get a notification on your phone when you're approaching home and parcels are waiting at the Paczkomat®. This way, you can stop by the locker on your way in - no need to get home first, only to remember that you or someone else in your household has a package to collect.
+
+```yaml
+alias: Parcel pickup reminder
+description: ""
+triggers:
+  - trigger: zone
+    entity_id: person.husband
+    zone: zone.home
+    event: enter
+conditions:
+  - condition: or
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.inpost_123456789_ready_for_pickup_parcels_count
+        above: 0
+      - condition: numeric_state
+        entity_id: sensor.inpost_987654321_ready_for_pickup_parcels_count
+        above: 0
+actions:
+  - action: notify.mobile_app_iphone_husband
+    metadata: {}
+    data:
+      title: 📦 Parcels waiting
+      message: >-
+        🙋‍♀️ Wife: {{
+        states('sensor.inpost_987654321_ready_for_pickup_parcels_count') }}.
+
+        🙋‍♂️ Husband: {{
+        states('sensor.inpost_123456789_ready_for_pickup_parcels_count') }}.
+mode: single
+```
 
 ## Entities
 
@@ -64,6 +131,8 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 | Platform        | Entity                                                     | Description                                                                        |
 |:----------------|:-----------------------------------------------------------|:-----------------------------------------------------------------------------------|
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_locker_id`              | The public ID of the specific parcel locker.                                       |
+| `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_description`            | Description of the locker location (e.g., "przy sklepie Biedronka").               |
+| `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_address`                | Full address of the locker (city, zip code, street, building number).              |
 | `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup`       | $\text{True}$ if **any** parcels are available for pickup in this specific locker. |
 | `sensor`        | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_ready_for_pickup_count` | Number of parcels available for pickup in this specific locker.                    |
 | `binary_sensor` | `inpost_[PHONE_NUMBER]_[LOCKER_ID]_parcels_en_route`       | $\text{True}$ if **any** parcels are en route to this specific locker.             |
@@ -86,7 +155,6 @@ For each configured locker (identified by `[LOCKER_ID]`), the following entities
 * Add a `inpost_[PHONE_NUMBER]_[LOCKER_ID]_deadline` entity to monitor pickup deadlines for each ready-for-pickup parcel in a locker.
 * Add branding images to https://github.com/home-assistant/brands
 * Add this repository to HACS
-* Remove relay backend server and call InPost API directly from the integration.
 
 Please create a new GitHub Issue for any feature request you might have.
 
@@ -94,8 +162,8 @@ Please create a new GitHub Issue for any feature request you might have.
 
 ## Disclaimers
 
-| Item             | Details                                                                                                        |
-|:-----------------|:---------------------------------------------------------------------------------------------------------------|
-| **Backend Host** | Hosted by [jakon89](https://github.com/jakon89).                                                               |
-| **Usage Limits** | The developer reserves the right to apply usage limits if suspicious or excessive usage is detected.           |
-| **Inspiration**  | Some parts of the codebase were **heavily** inspired by [InPost-Air](https://github.com/CyberDeer/InPost-Air). |
+| Item             | Details                                                                                                                                   |
+|:-----------------|:------------------------------------------------------------------------------------------------------------------------------------------|
+| **Usage Limits** | InPost API may apply HTTP request rate limiting.                                                                                          |
+|   **API AUTH**   | InPost API may require additional authentication in future. Currently this integration use refresh token to keep access token up to date. |
+| **Inspiration**  | Some parts of the codebase were **heavily** inspired by [InPost-Air](https://github.com/CyberDeer/InPost-Air).                            |

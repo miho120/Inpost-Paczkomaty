@@ -6,3 +6,6 @@ pyvenv.cfg
 .idea/
 lib/
 __pycache__/
+.coverage
+coverage.xml
+report.json
