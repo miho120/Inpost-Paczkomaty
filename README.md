@@ -147,6 +147,8 @@ Display parcel counts directly on your Home Assistant dashboard to see at a glan
 
 Display detailed parcels information with QR codes for easy pickup using Home Assistant's built-in `<ha-qr-code>` component.
 
+![Parcel dashboacd card](docs/img/parcel-dashboard-example.png)
+
 **Markdown card configuration:**
 
 ```yaml
