@@ -11,6 +11,7 @@ from custom_components.inpost_paczkomaty.const import (
     API_BASE_URL,
     CONF_ACCESS_TOKEN,
     CONF_REFRESH_TOKEN,
+    DEFAULT_IGNORED_EN_ROUTE_STATUSES,
     OAUTH_CLIENT_ID,
     API_USER_AGENT,
 )
@@ -69,6 +70,7 @@ class InPostApiClient:
         access_token: Optional[str] = None,
         refresh_token: Optional[str] = None,
         on_token_refresh: Optional[Callable[[AuthTokens], None]] = None,
+        ignored_en_route_statuses: Optional[List[str]] = None,
     ) -> None:
         """Initialize the InPost API client.
 
@@ -78,12 +80,18 @@ class InPostApiClient:
             access_token: Optional access token override.
             refresh_token: Optional refresh token override.
             on_token_refresh: Optional callback when token is refreshed.
+            ignored_en_route_statuses: List of en_route statuses to ignore.
         """
         self.hass = hass
         data = entry.data if entry and entry.data else {}
         self._access_token = access_token or data.get(CONF_ACCESS_TOKEN)
         self._refresh_token = refresh_token or data.get(CONF_REFRESH_TOKEN)
         self._on_token_refresh = on_token_refresh
+        self._ignored_en_route_statuses = frozenset(
+            ignored_en_route_statuses
+            if ignored_en_route_statuses is not None
+            else DEFAULT_IGNORED_EN_ROUTE_STATUSES
+        )
 
         # Authenticated client for InPost mobile API
         self._http_client = HttpClient(
@@ -347,7 +355,10 @@ class InPostApiClient:
                 ready_for_pickup[locker_id].parcels.append(parcel.to_parcel_item())
                 ready_for_pickup[locker_id].count += 1
 
-            elif parcel.status in EN_ROUTE_STATUSES:
+            elif (
+                parcel.status in EN_ROUTE_STATUSES
+                and parcel.status not in self._ignored_en_route_statuses
+            ):
                 en_route_count += 1
                 if locker_id not in en_route:
                     en_route[locker_id] = Locker(

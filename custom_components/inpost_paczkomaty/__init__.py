@@ -14,7 +14,9 @@ import homeassistant.helpers.config_validation as cv
 from custom_components.inpost_paczkomaty.coordinator import InpostDataCoordinator
 from .api import InPostApiClient
 from .const import (
+    CONF_IGNORED_EN_ROUTE_STATUSES,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_IGNORED_EN_ROUTE_STATUSES,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     ENTRY_PHONE_NUMBER_CONFIG,
@@ -32,6 +34,10 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(
                     CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL
                 ): cv.positive_int,
+                vol.Optional(
+                    CONF_IGNORED_EN_ROUTE_STATUSES,
+                    default=DEFAULT_IGNORED_EN_ROUTE_STATUSES,
+                ): vol.All(cv.ensure_list, [cv.string]),
             }
         )
     },
@@ -55,11 +61,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(ENTRY_PHONE_NUMBER_CONFIG, "unknown"),
     )
 
-    # Get update_interval from configuration.yaml or use default
+    # Get configuration from configuration.yaml or use defaults
     domain_config = hass.data.get(DOMAIN, {})
     update_interval = domain_config.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+    ignored_en_route_statuses = domain_config.get(
+        CONF_IGNORED_EN_ROUTE_STATUSES, DEFAULT_IGNORED_EN_ROUTE_STATUSES
+    )
 
-    api_client = InPostApiClient(hass, entry)
+    api_client = InPostApiClient(
+        hass, entry, ignored_en_route_statuses=ignored_en_route_statuses
+    )
     coordinator = InpostDataCoordinator(hass, api_client, update_interval)
 
     await coordinator.async_config_entry_first_refresh()

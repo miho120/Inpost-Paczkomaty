@@ -6,6 +6,9 @@ DOMAIN = "inpost_paczkomaty"
 CONF_UPDATE_INTERVAL = "update_interval_seconds"
 DEFAULT_UPDATE_INTERVAL = 30  # seconds
 
+CONF_IGNORED_EN_ROUTE_STATUSES = "ignored_en_route_statuses"
+DEFAULT_IGNORED_EN_ROUTE_STATUSES = ["CONFIRMED"]
+
 # Config entry keys
 ENTRY_PHONE_NUMBER_CONFIG = "phone_number"
 

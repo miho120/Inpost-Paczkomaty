@@ -12,6 +12,7 @@ from custom_components.inpost_paczkomaty.exceptions import ApiClientError
 from custom_components.inpost_paczkomaty.const import (
     CONF_ACCESS_TOKEN,
     CONF_REFRESH_TOKEN,
+    DEFAULT_IGNORED_EN_ROUTE_STATUSES,
 )
 from custom_components.inpost_paczkomaty.models import (
     ApiParcel,
@@ -258,6 +259,31 @@ class TestInPostApiClient:
         client = InPostApiClient(mock_hass, entry)
         assert client._http_client is not None
 
+    def test_init_with_default_ignored_statuses(self, mock_hass, mock_config_entry):
+        """Test client initialization uses default ignored en_route statuses."""
+        client = InPostApiClient(mock_hass, mock_config_entry)
+
+        assert client._ignored_en_route_statuses == frozenset(
+            DEFAULT_IGNORED_EN_ROUTE_STATUSES
+        )
+
+    def test_init_with_custom_ignored_statuses(self, mock_hass, mock_config_entry):
+        """Test client initialization with custom ignored en_route statuses."""
+        custom_ignored = ["CONFIRMED", "DISPATCHED_BY_SENDER"]
+        client = InPostApiClient(
+            mock_hass, mock_config_entry, ignored_en_route_statuses=custom_ignored
+        )
+
+        assert client._ignored_en_route_statuses == frozenset(custom_ignored)
+
+    def test_init_with_empty_ignored_statuses(self, mock_hass, mock_config_entry):
+        """Test client initialization with empty ignored en_route statuses list."""
+        client = InPostApiClient(
+            mock_hass, mock_config_entry, ignored_en_route_statuses=[]
+        )
+
+        assert client._ignored_en_route_statuses == frozenset()
+
     @pytest.mark.asyncio
     async def test_get_parcels_success(
         self, mock_hass, mock_config_entry, sample_api_response
@@ -280,7 +306,9 @@ class TestInPostApiClient:
             assert isinstance(result, ParcelsSummary)
             assert result.all_count == 4
             assert result.ready_for_pickup_count == 1
-            assert result.en_route_count == 2  # OUT_FOR_DELIVERY + CONFIRMED
+            assert (
+                result.en_route_count == 1
+            )  # OUT_FOR_DELIVERY (CONFIRMED ignored by default)
             assert "GDA117M" in result.ready_for_pickup
             assert result.ready_for_pickup["GDA117M"].count == 1
 
@@ -709,7 +737,7 @@ class TestBuildParcelsSummary:
         assert len(result.ready_for_pickup["GDA117M"].parcels) == 2
 
     def test_en_route_parcels(self, mock_hass, mock_config_entry):
-        """Test en route parcels with different statuses."""
+        """Test en route parcels with different statuses (CONFIRMED ignored by default)."""
         client = InPostApiClient(mock_hass, mock_config_entry)
 
         parcels = [
@@ -732,11 +760,83 @@ class TestBuildParcelsSummary:
 
         result = client._build_parcels_summary(parcels)
 
+        # CONFIRMED is ignored by default
+        assert result.en_route_count == 2
+        assert "GDA08M" in result.en_route
+        assert "GDA117M" in result.en_route
+        assert result.en_route["GDA08M"].count == 1
+        assert result.en_route["GDA117M"].count == 1
+
+    def test_en_route_parcels_with_no_ignored_statuses(
+        self, mock_hass, mock_config_entry
+    ):
+        """Test en route parcels when no statuses are ignored."""
+        client = InPostApiClient(
+            mock_hass, mock_config_entry, ignored_en_route_statuses=[]
+        )
+
+        parcels = [
+            ApiParcel(
+                shipment_number="1",
+                status="OUT_FOR_DELIVERY",
+                pick_up_point=ApiPickUpPoint(name="GDA08M"),
+            ),
+            ApiParcel(
+                shipment_number="2",
+                status="CONFIRMED",
+                pick_up_point=ApiPickUpPoint(name="GDA08M"),
+            ),
+            ApiParcel(
+                shipment_number="3",
+                status="SENT_FROM_SOURCE_BRANCH",
+                pick_up_point=ApiPickUpPoint(name="GDA117M"),
+            ),
+        ]
+
+        result = client._build_parcels_summary(parcels)
+
+        # No statuses ignored, all en_route statuses counted
         assert result.en_route_count == 3
         assert "GDA08M" in result.en_route
         assert "GDA117M" in result.en_route
         assert result.en_route["GDA08M"].count == 2
         assert result.en_route["GDA117M"].count == 1
+
+    def test_en_route_parcels_with_custom_ignored_statuses(
+        self, mock_hass, mock_config_entry
+    ):
+        """Test en route parcels with custom ignored statuses."""
+        client = InPostApiClient(
+            mock_hass,
+            mock_config_entry,
+            ignored_en_route_statuses=["CONFIRMED", "SENT_FROM_SOURCE_BRANCH"],
+        )
+
+        parcels = [
+            ApiParcel(
+                shipment_number="1",
+                status="OUT_FOR_DELIVERY",
+                pick_up_point=ApiPickUpPoint(name="GDA08M"),
+            ),
+            ApiParcel(
+                shipment_number="2",
+                status="CONFIRMED",
+                pick_up_point=ApiPickUpPoint(name="GDA08M"),
+            ),
+            ApiParcel(
+                shipment_number="3",
+                status="SENT_FROM_SOURCE_BRANCH",
+                pick_up_point=ApiPickUpPoint(name="GDA117M"),
+            ),
+        ]
+
+        result = client._build_parcels_summary(parcels)
+
+        # CONFIRMED and SENT_FROM_SOURCE_BRANCH are ignored
+        assert result.en_route_count == 1
+        assert "GDA08M" in result.en_route
+        assert "GDA117M" not in result.en_route
+        assert result.en_route["GDA08M"].count == 1
 
     def test_courier_parcels_without_locker(self, mock_hass, mock_config_entry):
         """Test courier parcels without pickup point use COURIER as locker_id."""
