@@ -1,3 +1,10 @@
+## [0.4.1](https://github.com/jakon89/Inpost-Paczkomaty/compare/v0.4.0...v0.4.1) (2026-01-06)
+
+
+### Bug Fixes
+
+* handle absense of /more/ field from InPost API ([#24](https://github.com/jakon89/Inpost-Paczkomaty/issues/24)) ([6549da7](https://github.com/jakon89/Inpost-Paczkomaty/commit/6549da7978bd65e5eb20fda852218139194300ef))
+
 # [0.4.0](https://github.com/jakon89/Inpost-Paczkomaty/compare/v0.3.0...v0.4.0) (2026-01-06)
 
 
