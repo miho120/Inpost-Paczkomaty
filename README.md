@@ -30,6 +30,8 @@ Authentication is now completed in your browser and the resulting authorization 
    confirmation** on InPost's own pages. After a successful login your browser is redirected to a
    `https://account.inpost-group.com/callback?code=...` page; you copy that address (or just the code) and paste it back
    into Home Assistant.
+   > **Tip:** If opening the InPost login page shows you as **already logged in/empty page** (it skips straight past the sign-in),
+   > clear your browser cookies for `account.inpost-group.com` and open the link again to complete a fresh login.
 2. **Data Flow:** Login happens entirely in your browser on official InPost pages. Home Assistant only exchanges the
    returned authorization code for API tokens (access token, refresh token, etc.), which are stored locally on your HA
    instance.
@@ -49,7 +51,7 @@ Authentication is now completed in your browser and the resulting authorization 
 5. **Restart Home Assistant**.
 6. Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Integrations** $\rightarrow$ **Add
    Integration**, and search for **InPost Paczkomaty**.
-7. Open the **InPost login page** link shown in the setup dialog and sign in in your browser (phone number, SMS code, captcha and, if prompted, email confirmation). **Note:** Any verification email from InPost is legitimate - it will **not** ask for any credentials.
+7. Open the **InPost login page** link shown in the setup dialog and sign in in your browser (phone number, SMS code, captcha and, if prompted, email confirmation). **Note:** Any verification email from InPost is legitimate - it will **not** ask for any credentials. If the page shows you as **already logged in/empty page**, clear your browser cookies for `account.inpost-group.com` and open the link again.
 8. After logging in, your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine). Copy the full address from your browser's address bar and paste it back into Home Assistant.
 9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically.
 
