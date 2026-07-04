@@ -53,7 +53,8 @@ Authentication is now completed in your browser and the resulting authorization 
 8. After logging in, your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine). Copy the full address from your browser's address bar and paste it back into Home Assistant.
 9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically.
 
-> 🎥 Prefer to watch? Follow the [![authentication tutorial on YouTube](https://img.youtube.com/vi/C_7XYLEjjgs/0.jpg)](https://www.youtube.com/watch?v=C_7XYLEjjgs).
+> 🎥 Prefer to watch?
+> [![authentication tutorial on YouTube]()](https://www.youtube.com/watch?v=C_7XYLEjjgs).
 
 ### Manual Installation
 
