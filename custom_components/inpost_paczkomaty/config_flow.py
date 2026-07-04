@@ -26,10 +26,7 @@ from .const import (
     CONF_TOKEN_TYPE,
 )
 from .exceptions import (
-    IdentityAdditionLimitReachedError,
     InPostApiError,
-    InvalidOtpCodeError,
-    RateLimitError,
 )
 from .inpost_auth_flow import InpostAuth
 from .utils import haversine
@@ -52,19 +49,11 @@ class SimpleParcelLocker:
     distance: float
 
 
-USER_SCHEMA = vol.Schema(
+SESSION_SCHEMA = vol.Schema(
     {
         vol.Required(
-            "phone_number",
-        ): TextSelector(TextSelectorConfig(type="text"))
-    }
-)
-
-CODE_SCHEMA = vol.Schema(
-    {
-        vol.Required(
-            "sms_code",
-        ): TextSelector(TextSelectorConfig(type="text"))
+            "session_cookie",
+        ): TextSelector(TextSelectorConfig(type="text", multiline=True))
     }
 )
 
@@ -87,200 +76,85 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._auth = None
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial step - phone number input."""
+        """Handle the initial step - external browser login via SESSION cookie.
+
+        The user logs in to InPost in an external browser (handling the phone
+        number, SMS code, captcha and email confirmation there) and pastes back
+        their authenticated session cookie. We then mint an authorization code
+        server-side using our own PKCE and exchange it for tokens.
+        """
         errors: dict[str, str] = {}
 
+        # Prepare an auth handler so we can show the correct login URL.
+        if self._auth is None:
+            self._auth = InpostAuth(language=self.hass.config.language)
+
         if user_input is not None:
-            phone_number = user_input["phone_number"].strip()
+            try:
+                self._auth.set_session_cookies(user_input["session_cookie"])
 
-            # Validate phone number format (9 digits)
-            if not phone_number.isdigit() or len(phone_number) != 9:
-                errors["base"] = "invalid_phone_format"
-            else:
-                try:
-                    # Initialize InPost OAuth2 authentication
-                    self._auth = InpostAuth(language=self.hass.config.language)
+                # Fetch authorization code using the injected browser session.
+                auth_code = await self._auth.fetch_authorization_code()
+                _LOGGER.debug("Authorization code obtained")
 
-                    # Step 1: Initialize OAuth session
-                    await self._auth.initialize_session()
+                # Exchange code for tokens (refresh token obtained here).
+                tokens = await self._auth.exchange_code_for_tokens(auth_code)
+                _LOGGER.info("Tokens obtained successfully")
 
-                    # Step 2: Fetch XSRF token
-                    auth_step = await self._auth.fetch_xsrf_token()
-                    _LOGGER.debug("Initial auth step: %s", auth_step.step)
+                self._data[CONF_ACCESS_TOKEN] = tokens.access_token
+                self._data[CONF_REFRESH_TOKEN] = tokens.refresh_token
+                self._data[CONF_TOKEN_EXPIRES_IN] = tokens.expires_in
+                self._data[CONF_TOKEN_TYPE] = tokens.token_type
 
-                    # Step 3: Submit phone number (with Polish country code)
-                    phone_with_code = f"+48{phone_number}"
-                    auth_step = await self._auth.submit_phone_number(phone_with_code)
-                    _LOGGER.info(
-                        "Phone number submitted, next step: %s", auth_step.step
-                    )
+                await self._cleanup_auth()
 
-                    # Store phone number for later use
-                    self._data = {
-                        ENTRY_PHONE_NUMBER_CONFIG: phone_number,
-                    }
+                # Resolve the phone number from the profile for the entry title.
+                self._data[ENTRY_PHONE_NUMBER_CONFIG] = (
+                    await self._fetch_phone_number()
+                )
 
-                    return await self.async_step_code()
+                return await self.async_step_lockers()
 
-                except RateLimitError as e:
-                    _LOGGER.error("Rate limit exceeded: %s", e)
-                    errors["base"] = "rate_limited_error"
-                    await self._cleanup_auth()
+            except (InPostApiError, ValueError) as e:
+                _LOGGER.error("Failed to authenticate with session cookie: %s", e)
+                errors["base"] = "invalid_session"
 
-                except IdentityAdditionLimitReachedError as e:
-                    _LOGGER.error("Identity addition limit reached: %s", e)
-                    errors["base"] = "identity_limit_reached"
-                    await self._cleanup_auth()
-
-                except InPostApiError as e:
-                    _LOGGER.error("InPost API error: %s", e)
-                    errors["base"] = "phone_unknown_server_error"
-                    await self._cleanup_auth()
-
-                except Exception as e:
-                    _LOGGER.exception("Unexpected error during phone submission: %s", e)
-                    errors["base"] = "phone_unknown_server_error"
-                    await self._cleanup_auth()
+            except Exception as e:
+                _LOGGER.exception("Unexpected error during authentication: %s", e)
+                errors["base"] = "invalid_session"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=USER_SCHEMA,
-            errors=errors,
-        )
-
-    async def async_step_code(self, user_input=None):
-        """Handle OTP code verification step."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                if not self._auth:
-                    _LOGGER.error("Authentication session not found")
-                    return await self.async_step_user()
-
-                # Step 4: Submit OTP code
-                otp_code = user_input["sms_code"].strip()
-                auth_step = await self._auth.submit_otp_code(otp_code)
-                _LOGGER.info("OTP submitted, step: %s", auth_step.step)
-
-                # Check current step after OTP submission
-                auth_step = await self._auth.get_current_step()
-
-                # Step 5: Check if email confirmation is required
-                requires_email, hashed_email = auth_step.requires_email
-                if requires_email:
-                    _LOGGER.info("Email confirmation required for: %s", hashed_email)
-                    self._data["hashed_email"] = hashed_email
-                    return await self.async_step_email_confirm()
-
-                # If onboarded, proceed to get tokens
-                if auth_step.is_onboarded:
-                    return await self._complete_authentication()
-
-                # Handle unexpected step
-                _LOGGER.warning("Unexpected auth step: %s", auth_step.step)
-                errors["base"] = "unexpected_auth_step"
-
-            except InvalidOtpCodeError as e:
-                _LOGGER.error("Invalid OTP code: %s", e)
-                errors["base"] = "invalid_code"
-
-            except RateLimitError as e:
-                _LOGGER.error("Rate limit exceeded: %s", e)
-                errors["base"] = "rate_limited_error"
-
-            except InPostApiError as e:
-                _LOGGER.error("InPost API error during OTP: %s", e)
-                errors["base"] = "invalid_code"
-
-            except Exception as e:
-                _LOGGER.exception("Unexpected error during OTP verification: %s", e)
-                errors["base"] = "invalid_code"
-
-        return self.async_show_form(
-            step_id="code",
-            data_schema=CODE_SCHEMA,
-            errors=errors,
-        )
-
-    async def async_step_email_confirm(self, user_input=None):
-        """Handle email confirmation step."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                if not self._auth:
-                    _LOGGER.error("Authentication session not found")
-                    return await self.async_step_user()
-
-                # Check if email was confirmed
-                auth_step = await self._auth.get_current_step()
-
-                if auth_step.is_onboarded:
-                    return await self._complete_authentication()
-
-                # Still waiting for email confirmation
-                errors["base"] = "email_not_confirmed"
-
-            except Exception as e:
-                _LOGGER.exception("Error checking email confirmation: %s", e)
-                errors["base"] = "email_confirmation_error"
-
-        else:
-            # First time showing this step - send email confirmation request
-            try:
-                if self._auth:
-                    await self._auth.request_email_confirmation()
-                    _LOGGER.info("Email confirmation request sent")
-            except Exception as e:
-                _LOGGER.error("Failed to send email confirmation request: %s", e)
-                errors["base"] = "email_confirmation_error"
-
-        return self.async_show_form(
-            step_id="email_confirm",
-            data_schema=vol.Schema({}),
+            data_schema=SESSION_SCHEMA,
             errors=errors,
             description_placeholders={
-                "hashed_email": self._data.get("hashed_email", ""),
+                "login_url": self._auth.build_login_url(),
             },
         )
 
-    async def _complete_authentication(self):
-        """Complete authentication and proceed to locker selection."""
+    async def _fetch_phone_number(self) -> str:
+        """Fetch the account phone number from the user profile.
+
+        Returns:
+            The phone number (without country code) or empty string if
+            unavailable.
+        """
+        from .api import InPostApiClient
+
         try:
-            if not self._auth:
-                _LOGGER.error("Authentication session not found")
-                return await self.async_step_user()
+            api_client = InPostApiClient(
+                self.hass,
+                access_token=self._data.get(CONF_ACCESS_TOKEN),
+            )
+            profile = await api_client.get_profile()
+            await api_client.close()
 
-            # Step 7: Fetch authorization code
-            auth_code = await self._auth.fetch_authorization_code()
-            _LOGGER.debug("Authorization code obtained")
-
-            # Exchange code for tokens
-            tokens = await self._auth.exchange_code_for_tokens(auth_code)
-            _LOGGER.info("Tokens obtained successfully")
-
-            # Store tokens in config entry data
-            self._data[CONF_ACCESS_TOKEN] = tokens.access_token
-            self._data[CONF_REFRESH_TOKEN] = tokens.refresh_token
-            self._data[CONF_TOKEN_EXPIRES_IN] = tokens.expires_in
-            self._data[CONF_TOKEN_TYPE] = tokens.token_type
-
-            # Clean up auth session
-            await self._cleanup_auth()
-
-            # Proceed to locker selection step
-            return await self.async_step_lockers()
-
-        except InPostApiError as e:
-            _LOGGER.error("Failed to get tokens: %s", e)
-            await self._cleanup_auth()
-            return self.async_abort(reason="token_exchange_failed")
-
+            if profile.personal and profile.personal.phone_number:
+                return profile.personal.phone_number
         except Exception as e:
-            _LOGGER.exception("Unexpected error during token exchange: %s", e)
-            await self._cleanup_auth()
-            return self.async_abort(reason="token_exchange_failed")
+            _LOGGER.warning("Failed to fetch phone number from profile: %s", e)
+
+        return ""
 
     async def _get_favorite_lockers(self) -> list[str]:
         """Fetch favorite lockers from user profile.

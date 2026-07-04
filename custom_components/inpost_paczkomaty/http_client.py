@@ -11,6 +11,7 @@ from typing import Optional
 
 import aiohttp
 from aiohttp.resolver import ThreadedResolver
+from yarl import URL
 
 from .exceptions import InPostApiError
 from .models import HttpResponse
@@ -51,6 +52,10 @@ class HttpClient:
         self.headers = self._build_headers(auth_type, auth_value, custom_headers)
         self.session: Optional[aiohttp.ClientSession] = None
         self.default_timeout = default_timeout
+        # Cookies to apply as soon as the session is created, scoped to a
+        # response URL so aiohttp associates them with the correct domain.
+        self._initial_cookies: dict = {}
+        self._initial_cookies_url: Optional[str] = None
 
     def _build_headers(
         self,
@@ -91,6 +96,15 @@ class HttpClient:
             self.session = aiohttp.ClientSession(
                 headers=self.headers, connector=connector
             )
+            if self._initial_cookies:
+                response_url = (
+                    URL(self._initial_cookies_url)
+                    if self._initial_cookies_url
+                    else None
+                )
+                self.session.cookie_jar.update_cookies(
+                    self._initial_cookies, response_url=response_url
+                )
         return self.session
 
     def update_headers(self, headers: dict) -> None:
@@ -113,6 +127,24 @@ class HttpClient:
         """
         if self.session and not self.session.closed:
             self.session.cookie_jar.update_cookies(cookies)
+
+    def set_domain_cookies(self, cookies: dict, url: str) -> None:
+        """
+        Inject cookies scoped to a specific domain.
+
+        The cookies are applied immediately if a session already exists and are
+        also stored so they get re-applied when a new session is created. The
+        ``url`` ensures aiohttp associates the cookies with the correct domain
+        so they are actually sent with subsequent requests.
+
+        Args:
+            cookies: Dictionary of cookie name/value pairs.
+            url: Response URL used to scope the cookies to a domain.
+        """
+        self._initial_cookies.update(cookies)
+        self._initial_cookies_url = url
+        if self.session and not self.session.closed:
+            self.session.cookie_jar.update_cookies(cookies, response_url=URL(url))
 
     async def _request(
         self,
