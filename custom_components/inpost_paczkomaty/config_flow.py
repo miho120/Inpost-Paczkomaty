@@ -109,9 +109,7 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self._cleanup_auth()
 
                 # Resolve the phone number from the profile for the entry title.
-                self._data[ENTRY_PHONE_NUMBER_CONFIG] = (
-                    await self._fetch_phone_number()
-                )
+                self._data[ENTRY_PHONE_NUMBER_CONFIG] = await self._fetch_phone_number()
 
                 return await self.async_step_lockers()
 

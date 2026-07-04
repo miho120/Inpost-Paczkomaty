@@ -107,10 +107,7 @@ class TestInpostAuth:
         """Extract the code from a bare query string (no state to validate)."""
         auth = InpostAuth()
 
-        assert (
-            auth.extract_authorization_code("code=auth_code_123")
-            == "auth_code_123"
-        )
+        assert auth.extract_authorization_code("code=auth_code_123") == "auth_code_123"
 
     def test_extract_authorization_code_raw_code(self):
         """A raw code without query syntax is returned as-is."""
