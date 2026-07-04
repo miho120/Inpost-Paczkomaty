@@ -4,16 +4,16 @@
       "token_exchange_failed": "Nie udało się zakończyć uwierzytelniania. Spróbuj ponownie."
     },
     "error": {
-      "invalid_session": "Nie udało się uwierzytelnić za pomocą podanej sesji. Zaloguj się ponownie w przeglądarce i skopiuj nowy plik cookie SESSION.",
+      "invalid_auth_response": "Nie udało się odczytać prawidłowego kodu autoryzacji. Upewnij się, że skopiowałeś pełny adres URL po zalogowaniu, i spróbuj ponownie.",
       "rate_limited_error": "Zbyt wiele żądań. Spróbuj ponownie później.",
       "cannot_fetch_lockers": "Nie udało się pobrać listy paczkomatów. Możesz kontynuować bez wybierania paczkomatów i skonfigurować je później w opcjach."
     },
     "step": {
       "user": {
         "title": "Logowanie InPost",
-        "description": "1. Otwórz [stronę logowania InPost]({login_url}) w przeglądarce i zaloguj się (numer telefonu, kod SMS, captcha oraz potwierdzenie email).\n2. Po zalogowaniu otwórz narzędzia deweloperskie przeglądarki (F12) > Aplikacja/Pamięć > Pliki cookie > `https://account.inpost-group.com`.\n3. Skopiuj poniżej wartość pliku cookie `SESSION` (lub wklej cały ciąg cookie).",
+        "description": "1. Otwórz [stronę logowania InPost]({login_url}) w przeglądarce i zaloguj się (numer telefonu, kod SMS, captcha oraz potwierdzenie email).\n2. Po pomyślnym zalogowaniu przeglądarka zostanie przekierowana na stronę `https://account.inpost-group.com/callback?code=...` (może być pusta lub pokazywać błąd - to normalne).\n3. Skopiuj pełny adres z paska adresu przeglądarki i wklej go poniżej.",
         "data": {
-          "session_cookie": "Plik cookie SESSION"
+          "redirect_url": "Adres URL przekierowania (lub kod)"
         }
       },
       "lockers": {

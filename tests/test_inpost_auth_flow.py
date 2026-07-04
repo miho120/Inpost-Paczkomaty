@@ -90,88 +90,55 @@ class TestInpostAuth:
         assert f"state={auth._flow_state}" in url
 
     # -------------------------------------------------------------------------
-    # Session cookie parsing / injection
+    # Authorization code extraction
     # -------------------------------------------------------------------------
 
-    def test_parse_cookie_input_bare_value(self):
-        """A bare value is treated as the SESSION cookie."""
-        cookies = InpostAuth._parse_cookie_input("abc123")
-
-        assert cookies == {"SESSION": "abc123"}
-
-    def test_parse_cookie_input_full_string(self):
-        """A full cookie string is parsed into name/value pairs."""
-        cookies = InpostAuth._parse_cookie_input(
-            "SESSION=abc123; remember-me=xyz; __cf_bm=cf-value"
+    def test_extract_authorization_code_from_full_url(self):
+        """Extract the code from a full callback URL and validate state."""
+        auth = InpostAuth()
+        url = (
+            "https://account.inpost-group.com/callback"
+            f"?code=auth_code_123&state={auth._flow_state}"
         )
 
-        assert cookies["SESSION"] == "abc123"
-        assert cookies["remember-me"] == "xyz"
-        assert cookies["__cf_bm"] == "cf-value"
+        assert auth.extract_authorization_code(url) == "auth_code_123"
 
-    def test_parse_cookie_input_empty(self):
-        """Empty input yields no cookies."""
-        assert InpostAuth._parse_cookie_input("   ") == {}
-
-    def test_set_session_cookies_injects_into_client(self):
-        """set_session_cookies forwards parsed cookies to the HTTP client."""
+    def test_extract_authorization_code_from_query_string(self):
+        """Extract the code from a bare query string (no state to validate)."""
         auth = InpostAuth()
 
-        with patch.object(auth._http_client, "set_domain_cookies") as mock_set:
-            auth.set_session_cookies("SESSION=abc123; remember-me=xyz")
+        assert (
+            auth.extract_authorization_code("code=auth_code_123")
+            == "auth_code_123"
+        )
 
-            mock_set.assert_called_once()
-            args, kwargs = mock_set.call_args
-            cookies = args[0]
-            assert cookies["SESSION"] == "abc123"
-            assert cookies["remember-me"] == "xyz"
-            assert kwargs["url"] == auth.OAUTH_BASE_URL
-
-    def test_set_session_cookies_empty_raises(self):
-        """An empty cookie input raises ValueError."""
+    def test_extract_authorization_code_raw_code(self):
+        """A raw code without query syntax is returned as-is."""
         auth = InpostAuth()
 
-        with pytest.raises(ValueError):
-            auth.set_session_cookies("")
+        assert auth.extract_authorization_code("raw_code_value") == "raw_code_value"
 
-    @pytest.mark.asyncio
-    async def test_fetch_authorization_code_success(self):
-        """Test fetching authorization code."""
+    def test_extract_authorization_code_state_mismatch(self):
+        """A mismatching state raises ValueError."""
+        auth = InpostAuth()
+        url = "https://example.com/callback?code=abc&state=not_matching"
+
+        with pytest.raises(ValueError, match="State mismatch"):
+            auth.extract_authorization_code(url)
+
+    def test_extract_authorization_code_empty(self):
+        """Empty input raises ValueError."""
         auth = InpostAuth()
 
-        with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = HttpResponse(
-                body={},
-                status=302,
-                headers={
-                    "Location": "https://example.com/callback?code=auth_code_123&state=xyz"
-                },
-            )
+        with pytest.raises(ValueError, match="No authorization code"):
+            auth.extract_authorization_code("   ")
 
-            code = await auth.fetch_authorization_code()
-
-            assert code == "auth_code_123"
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_fetch_authorization_code_no_code(self):
-        """Test fetching authorization code when not present."""
+    def test_extract_authorization_code_missing_code(self):
+        """A URL with a query but no code value raises ValueError."""
         auth = InpostAuth()
 
-        with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = HttpResponse(
-                body={},
-                status=302,
-                headers={
-                    "Location": "https://example.com/callback?error=access_denied"
-                },
-            )
-
-            with pytest.raises(ValueError, match="Authorization code not found"):
-                await auth.fetch_authorization_code()
-
-        await auth.close()
+        with pytest.raises(ValueError, match="not found"):
+            auth.extract_authorization_code("https://example.com/callback?code=")
 
     @pytest.mark.asyncio
     async def test_exchange_code_for_tokens_success(self):
@@ -277,34 +244,27 @@ class TestInpostAuth:
 
 
 class TestAuthFlowIntegration:
-    """Integration tests for the session-cookie auth flow."""
+    """Integration tests for the external-browser auth flow."""
 
     @pytest.mark.asyncio
-    async def test_session_cookie_auth_flow(self):
-        """Test the full session-cookie -> code -> tokens flow (mocked)."""
+    async def test_redirect_code_auth_flow(self):
+        """Test the full redirect-URL -> code -> tokens flow (mocked)."""
         auth = InpostAuth()
 
-        with (
-            patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get,
-            patch.object(
-                auth._http_client, "post", new_callable=AsyncMock
-            ) as mock_post,
-            patch.object(auth._http_client, "set_domain_cookies") as mock_set,
-        ):
-            # Inject the browser session cookie.
-            auth.set_session_cookies("SESSION=session_value")
-            mock_set.assert_called_once()
+        # The user opens the login URL, logs in and pastes back the callback URL.
+        login_url = auth.build_login_url()
+        assert "oauth2/authorize" in login_url
 
-            # Mint the authorization code via the authorize redirect.
-            mock_get.return_value = HttpResponse(
-                body={},
-                status=302,
-                headers={"Location": "https://callback?code=auth_code_123"},
-            )
-            code = await auth.fetch_authorization_code()
-            assert code == "auth_code_123"
+        redirect_url = (
+            "https://account.inpost-group.com/callback"
+            f"?code=auth_code_123&state={auth._flow_state}"
+        )
+        code = auth.extract_authorization_code(redirect_url)
+        assert code == "auth_code_123"
 
-            # Exchange for tokens.
+        with patch.object(
+            auth._http_client, "post", new_callable=AsyncMock
+        ) as mock_post:
             mock_post.return_value = HttpResponse(
                 body={
                     "access_token": "access_token_value",

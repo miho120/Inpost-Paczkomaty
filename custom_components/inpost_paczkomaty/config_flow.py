@@ -49,10 +49,10 @@ class SimpleParcelLocker:
     distance: float
 
 
-SESSION_SCHEMA = vol.Schema(
+REDIRECT_SCHEMA = vol.Schema(
     {
         vol.Required(
-            "session_cookie",
+            "redirect_url",
         ): TextSelector(TextSelectorConfig(type="text", multiline=True))
     }
 )
@@ -76,26 +76,26 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._auth = None
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial step - external browser login via SESSION cookie.
+        """Handle the initial step - external browser login.
 
-        The user logs in to InPost in an external browser (handling the phone
-        number, SMS code, captcha and email confirmation there) and pastes back
-        their authenticated session cookie. We then mint an authorization code
-        server-side using our own PKCE and exchange it for tokens.
+        The user opens the InPost login URL in a browser and completes the login
+        (phone number, SMS code, captcha and email confirmation). InPost then
+        redirects the browser to ``.../callback?code=...``; the user pastes that
+        URL (or the code) back here and we exchange it for tokens using our own
+        PKCE ``code_verifier``.
         """
         errors: dict[str, str] = {}
 
-        # Prepare an auth handler so we can show the correct login URL.
+        # Prepare an auth handler so the login URL and PKCE stay consistent
+        # across form renders and submission.
         if self._auth is None:
             self._auth = InpostAuth(language=self.hass.config.language)
 
         if user_input is not None:
             try:
-                self._auth.set_session_cookies(user_input["session_cookie"])
-
-                # Fetch authorization code using the injected browser session.
-                auth_code = await self._auth.fetch_authorization_code()
-                _LOGGER.debug("Authorization code obtained")
+                auth_code = self._auth.extract_authorization_code(
+                    user_input["redirect_url"]
+                )
 
                 # Exchange code for tokens (refresh token obtained here).
                 tokens = await self._auth.exchange_code_for_tokens(auth_code)
@@ -116,16 +116,16 @@ class InPostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_lockers()
 
             except (InPostApiError, ValueError) as e:
-                _LOGGER.error("Failed to authenticate with session cookie: %s", e)
-                errors["base"] = "invalid_session"
+                _LOGGER.error("Failed to authenticate with authorization code: %s", e)
+                errors["base"] = "invalid_auth_response"
 
             except Exception as e:
                 _LOGGER.exception("Unexpected error during authentication: %s", e)
-                errors["base"] = "invalid_session"
+                errors["base"] = "invalid_auth_response"
 
         return self.async_show_form(
             step_id="user",
-            data_schema=SESSION_SCHEMA,
+            data_schema=REDIRECT_SCHEMA,
             errors=errors,
             description_placeholders={
                 "login_url": self._auth.build_login_url(),

@@ -10,7 +10,7 @@ import hashlib
 import logging
 import os
 import re
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from .const import (
     API_BASE_URL,
@@ -124,89 +124,47 @@ class InpostAuth:
         """
         return f"{self.OAUTH_BASE_URL}/oauth2/authorize?{urlencode(self._build_oauth_params())}"
 
-    def set_session_cookies(self, cookie_input: str) -> None:
+    def extract_authorization_code(self, redirect_input: str) -> str:
         """
-        Inject the authenticated browser session cookies.
+        Extract the OAuth2 authorization code from the user's browser redirect.
 
-        Accepts either a bare ``SESSION`` cookie value or a full cookie string
-        (e.g. ``SESSION=...; remember-me=...; __cf_bm=...``). All provided
-        cookies are forwarded so requests better resemble the original browser
-        session (helps pass Cloudflare bot checks).
+        After the user logs in via ``build_login_url()``, InPost redirects the
+        browser to ``.../callback?code=...&state=...``. The user pastes back
+        either that full URL or just the ``code`` value.
 
         Args:
-            cookie_input: The SESSION value or full cookie header string.
-
-        Raises:
-            ValueError: If no usable cookie value can be parsed from the input.
-        """
-        cookies = self._parse_cookie_input(cookie_input)
-        if not cookies:
-            raise ValueError("No session cookie could be parsed from the input")
-
-        self._http_client.set_domain_cookies(cookies, url=self.OAUTH_BASE_URL)
-        _LOGGER.debug("Session cookies injected: %s", ", ".join(cookies.keys()))
-
-    @staticmethod
-    def _parse_cookie_input(cookie_input: str) -> dict:
-        """
-        Parse a cookie input string into a name/value dictionary.
-
-        Args:
-            cookie_input: Either a bare SESSION value or a ``name=value; ...``
-                cookie string.
+            redirect_input: The pasted callback URL, a bare query string, or the
+                raw authorization code.
 
         Returns:
-            Dictionary of cookie name/value pairs.
+            The OAuth2 authorization code.
+
+        Raises:
+            ValueError: If no code can be extracted or the state does not match.
         """
-        value = (cookie_input or "").strip()
+        value = (redirect_input or "").strip()
         if not value:
-            return {}
+            raise ValueError("No authorization code provided")
 
-        # A full cookie string contains "name=value" pairs separated by ";".
-        if "=" in value:
-            cookies: dict = {}
-            for part in value.split(";"):
-                part = part.strip()
-                if not part or "=" not in part:
-                    continue
-                name, _, cookie_value = part.partition("=")
-                name = name.strip()
-                cookie_value = cookie_value.strip()
-                if name:
-                    cookies[name] = cookie_value
-            return cookies
+        # A pasted URL / query string contains "code=...".
+        if "code=" in value:
+            query = value.split("?", 1)[1] if "?" in value else value
+            params = parse_qs(query)
 
-        # Otherwise treat the whole input as a bare SESSION cookie value.
-        return {"SESSION": value}
+            codes = params.get("code")
+            if not codes or not codes[0]:
+                raise ValueError("Authorization code not found in redirect URL")
 
-    async def fetch_authorization_code(self) -> str:
-        """
-        Fetch the OAuth2 authorization code after onboarding.
+            state = params.get("state", [None])[0]
+            if state and state != self._flow_state:
+                raise ValueError("State mismatch in redirect URL")
 
-        Makes a request to the authorize endpoint to get the
-        authorization code from the redirect location.
+            _LOGGER.debug("Authorization code extracted from redirect URL")
+            return codes[0]
 
-        Returns:
-            OAuth2 authorization code.
-
-        Raises:
-            ValueError: If authorization code cannot be extracted.
-        """
-        _LOGGER.info("Fetching authorization code")
-        url = f"{self.OAUTH_BASE_URL}/oauth2/authorize"
-        response = await self._http_client.get(
-            url=url, params=self._build_oauth_params()
-        )
-
-        # Extract authorization code from redirect location
-        location = response.headers.get("Location", "")
-        if "code=" not in location:
-            _LOGGER.error("Authorization code not found in redirect location")
-            raise ValueError("Authorization code not found in redirect location")
-
-        code = location.split("code=")[1].split("&")[0]
-        _LOGGER.debug("Authorization code obtained")
-        return code
+        # Otherwise treat the whole input as the raw authorization code.
+        _LOGGER.debug("Authorization code provided directly")
+        return value
 
     async def exchange_code_for_tokens(self, authorization_code: str) -> AuthTokens:
         """

@@ -4,16 +4,16 @@
       "token_exchange_failed": "Failed to complete authentication. Please try again."
     },
     "error": {
-      "invalid_session": "Could not authenticate with the provided session. Log in again in your browser and copy a fresh SESSION cookie.",
+      "invalid_auth_response": "Could not read a valid authorization code. Make sure you copied the full redirect URL after logging in, then try again.",
       "rate_limited_error": "Too many requests. Please try again later.",
       "cannot_fetch_lockers": "Failed to fetch parcel lockers list. You can continue without selecting lockers and configure them later in options."
     },
     "step": {
       "user": {
         "title": "InPost Login",
-        "description": "1. Open the [InPost login page]({login_url}) in your browser and sign in (phone number, SMS code, captcha and email confirmation).\n2. After logging in, open your browser's developer tools (F12) > Application/Storage > Cookies > `https://account.inpost-group.com`.\n3. Copy the value of the `SESSION` cookie (or paste the full cookie string) below.",
+        "description": "1. Open the [InPost login page]({login_url}) in your browser and sign in (phone number, SMS code, captcha and email confirmation).\n2. After a successful login your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine).\n3. Copy the full address from your browser's address bar and paste it below.",
         "data": {
-          "session_cookie": "SESSION cookie"
+          "redirect_url": "Redirect URL (or code)"
         }
       },
       "lockers": {
