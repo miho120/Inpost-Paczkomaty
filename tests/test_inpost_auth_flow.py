@@ -1,17 +1,12 @@
 """Unit tests for InPost authentication flow module."""
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from custom_components.inpost_paczkomaty.exceptions import (
-    IdentityAdditionLimitReachedError,
-    InPostApiError,
-    InvalidOtpCodeError,
-)
+from custom_components.inpost_paczkomaty.exceptions import InPostApiError
 from custom_components.inpost_paczkomaty.inpost_auth_flow import InpostAuth
-from custom_components.inpost_paczkomaty.models import AuthStep, HttpResponse
+from custom_components.inpost_paczkomaty.models import HttpResponse
 
 
 # =============================================================================
@@ -83,234 +78,61 @@ class TestInpostAuth:
         assert "state" in params
         assert "nonce" in params
 
-    @pytest.mark.asyncio
-    async def test_initialize_session(self):
-        """Test session initialization."""
+    def test_build_login_url(self):
+        """Test building the browser login URL."""
         auth = InpostAuth()
 
-        with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = HttpResponse(body={}, status=200)
+        url = auth.build_login_url()
 
-            await auth.initialize_session()
+        assert url.startswith("https://account.inpost-group.com/oauth2/authorize?")
+        assert "client_id=inpost-mobile" in url
+        assert "code_challenge=" in url
+        assert f"state={auth._flow_state}" in url
 
-            assert mock_get.called
-            call_args = mock_get.call_args
-            assert "oauth2/authorize" in call_args.kwargs["url"]
+    # -------------------------------------------------------------------------
+    # Session cookie parsing / injection
+    # -------------------------------------------------------------------------
 
-        await auth.close()
+    def test_parse_cookie_input_bare_value(self):
+        """A bare value is treated as the SESSION cookie."""
+        cookies = InpostAuth._parse_cookie_input("abc123")
 
-    @pytest.mark.asyncio
-    async def test_fetch_xsrf_token(self):
-        """Test XSRF token fetching."""
+        assert cookies == {"SESSION": "abc123"}
+
+    def test_parse_cookie_input_full_string(self):
+        """A full cookie string is parsed into name/value pairs."""
+        cookies = InpostAuth._parse_cookie_input(
+            "SESSION=abc123; remember-me=xyz; __cf_bm=cf-value"
+        )
+
+        assert cookies["SESSION"] == "abc123"
+        assert cookies["remember-me"] == "xyz"
+        assert cookies["__cf_bm"] == "cf-value"
+
+    def test_parse_cookie_input_empty(self):
+        """Empty input yields no cookies."""
+        assert InpostAuth._parse_cookie_input("   ") == {}
+
+    def test_set_session_cookies_injects_into_client(self):
+        """set_session_cookies forwards parsed cookies to the HTTP client."""
         auth = InpostAuth()
 
-        mock_cookie = MagicMock()
-        mock_cookie.value = "xsrf_token_value"
+        with patch.object(auth._http_client, "set_domain_cookies") as mock_set:
+            auth.set_session_cookies("SESSION=abc123; remember-me=xyz")
 
-        with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = HttpResponse(
-                body={"step": "PROVIDE_PHONE_NUMBER_FOR_LOGIN"},
-                status=200,
-                cookies={"XSRF-TOKEN": mock_cookie},
-            )
+            mock_set.assert_called_once()
+            args, kwargs = mock_set.call_args
+            cookies = args[0]
+            assert cookies["SESSION"] == "abc123"
+            assert cookies["remember-me"] == "xyz"
+            assert kwargs["url"] == auth.OAUTH_BASE_URL
 
-            result = await auth.fetch_xsrf_token()
-
-            assert result.step == "PROVIDE_PHONE_NUMBER_FOR_LOGIN"
-            assert auth._http_client.headers["X-XSRF-TOKEN"] == "xsrf_token_value"
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_fetch_xsrf_token_no_cookie(self):
-        """Test XSRF token fetching when no cookie present."""
+    def test_set_session_cookies_empty_raises(self):
+        """An empty cookie input raises ValueError."""
         auth = InpostAuth()
 
-        with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = HttpResponse(
-                body={"step": "SOME_STEP"},
-                status=200,
-                cookies={},
-            )
-
-            result = await auth.fetch_xsrf_token()
-
-            assert result.step == "SOME_STEP"
-            assert "X-XSRF-TOKEN" not in auth._http_client.headers
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_get_current_step(self):
-        """Test getting current step."""
-        auth = InpostAuth()
-
-        with patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = HttpResponse(
-                body={"step": "ONBOARDED"},
-                status=200,
-            )
-
-            result = await auth.get_current_step()
-
-            assert result.step == "ONBOARDED"
-            assert result.is_onboarded is True
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_submit_phone_number_success(self):
-        """Test successful phone number submission."""
-        auth = InpostAuth()
-
-        with patch.object(
-            auth._http_client, "post", new_callable=AsyncMock
-        ) as mock_post:
-            mock_post.return_value = HttpResponse(
-                body={"step": "PROVIDE_PHONE_CODE"},
-                status=200,
-            )
-
-            result = await auth.submit_phone_number("+48123456789")
-
-            assert result.step == "PROVIDE_PHONE_CODE"
-            assert result.requires_otp is True
-
-            call_args = mock_post.call_args
-            assert call_args.kwargs["json"] == {"phoneNumber": "+48123456789"}
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_submit_phone_number_limit_reached(self):
-        """Test phone number submission with identity limit reached."""
-        auth = InpostAuth()
-
-        nested_detail = json.dumps({"type": "IdentityAdditionLimitReached"})
-
-        with patch.object(
-            auth._http_client, "post", new_callable=AsyncMock
-        ) as mock_post:
-            mock_post.return_value = HttpResponse(
-                body={
-                    "type": "UserCatalogueBusinessFailure",
-                    "status": 422,
-                    "title": "Unprocessable Entity",
-                    "detail": nested_detail,
-                },
-                status=422,
-            )
-
-            with pytest.raises(IdentityAdditionLimitReachedError):
-                await auth.submit_phone_number("+48123456789")
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_submit_otp_code_success(self):
-        """Test successful OTP code submission."""
-        auth = InpostAuth()
-
-        with patch.object(
-            auth._http_client, "post", new_callable=AsyncMock
-        ) as mock_post:
-            mock_post.return_value = HttpResponse(
-                body={"step": "ONBOARDED"},
-                status=200,
-            )
-
-            result = await auth.submit_otp_code("123456")
-
-            assert result.step == "ONBOARDED"
-
-            call_args = mock_post.call_args
-            assert call_args.kwargs["json"] == {"code": "123456"}
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_submit_otp_code_invalid(self):
-        """Test OTP submission with invalid code."""
-        auth = InpostAuth()
-
-        nested_detail = json.dumps({"type": "InvalidVerificationCode"})
-
-        with patch.object(
-            auth._http_client, "post", new_callable=AsyncMock
-        ) as mock_post:
-            mock_post.return_value = HttpResponse(
-                body={
-                    "type": "Error",
-                    "status": 422,
-                    "detail": nested_detail,
-                },
-                status=422,
-            )
-
-            with pytest.raises(InvalidOtpCodeError):
-                await auth.submit_otp_code("000000")
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_request_email_confirmation(self):
-        """Test email confirmation request."""
-        auth = InpostAuth()
-
-        with patch.object(
-            auth._http_client, "post", new_callable=AsyncMock
-        ) as mock_post:
-            mock_post.return_value = HttpResponse(body={}, status=200)
-
-            response = await auth.request_email_confirmation()
-
-            assert response.status == 200
-            call_args = mock_post.call_args
-            assert call_args.kwargs["json"] == {"openEmailButtonVisible": True}
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_wait_for_email_confirmation_success(self):
-        """Test waiting for email confirmation - success case."""
-        auth = InpostAuth()
-
-        call_count = 0
-
-        async def mock_get_step():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 3:
-                return AuthStep(step="ONBOARDED")
-            return AuthStep(step="WAITING_FOR_EMAIL")
-
-        with patch.object(auth, "get_current_step", side_effect=mock_get_step):
-            result = await auth.wait_for_email_confirmation(
-                poll_interval=0.01,
-                timeout=1.0,
-            )
-
-            assert result is True
-            assert call_count >= 3
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_wait_for_email_confirmation_timeout(self):
-        """Test waiting for email confirmation - timeout case."""
-        auth = InpostAuth()
-
-        with patch.object(auth, "get_current_step", new_callable=AsyncMock) as mock:
-            mock.return_value = AuthStep(step="WAITING_FOR_EMAIL")
-
-            result = await auth.wait_for_email_confirmation(
-                poll_interval=0.01,
-                timeout=0.05,
-            )
-
-            assert result is False
-
-        await auth.close()
+        with pytest.raises(ValueError):
+            auth.set_session_cookies("")
 
     @pytest.mark.asyncio
     async def test_fetch_authorization_code_success(self):
@@ -455,52 +277,25 @@ class TestInpostAuth:
 
 
 class TestAuthFlowIntegration:
-    """Integration tests for the complete auth flow."""
+    """Integration tests for the session-cookie auth flow."""
 
     @pytest.mark.asyncio
-    async def test_complete_phone_auth_flow(self):
-        """Test complete phone authentication flow (mocked)."""
+    async def test_session_cookie_auth_flow(self):
+        """Test the full session-cookie -> code -> tokens flow (mocked)."""
         auth = InpostAuth()
-
-        xsrf_cookie = MagicMock()
-        xsrf_cookie.value = "xsrf_token"
 
         with (
             patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get,
             patch.object(
                 auth._http_client, "post", new_callable=AsyncMock
             ) as mock_post,
+            patch.object(auth._http_client, "set_domain_cookies") as mock_set,
         ):
-            # Step 1: Initialize session
-            mock_get.return_value = HttpResponse(body={}, status=200)
-            await auth.initialize_session()
+            # Inject the browser session cookie.
+            auth.set_session_cookies("SESSION=session_value")
+            mock_set.assert_called_once()
 
-            # Step 2: Fetch XSRF token
-            mock_get.return_value = HttpResponse(
-                body={"step": "PROVIDE_PHONE_NUMBER_FOR_LOGIN"},
-                status=200,
-                cookies={"XSRF-TOKEN": xsrf_cookie},
-            )
-            step = await auth.fetch_xsrf_token()
-            assert step.requires_phone is True
-
-            # Step 3: Submit phone number
-            mock_post.return_value = HttpResponse(
-                body={"step": "PROVIDE_PHONE_CODE"},
-                status=200,
-            )
-            step = await auth.submit_phone_number("+48123456789")
-            assert step.requires_otp is True
-
-            # Step 4: Submit OTP
-            mock_post.return_value = HttpResponse(
-                body={"step": "ONBOARDED"},
-                status=200,
-            )
-            step = await auth.submit_otp_code("123456")
-            assert step.is_onboarded is True
-
-            # Step 5: Get authorization code
+            # Mint the authorization code via the authorize redirect.
             mock_get.return_value = HttpResponse(
                 body={},
                 status=302,
@@ -509,7 +304,7 @@ class TestAuthFlowIntegration:
             code = await auth.fetch_authorization_code()
             assert code == "auth_code_123"
 
-            # Step 6: Exchange for tokens
+            # Exchange for tokens.
             mock_post.return_value = HttpResponse(
                 body={
                     "access_token": "access_token_value",
@@ -519,44 +314,6 @@ class TestAuthFlowIntegration:
             )
             tokens = await auth.exchange_code_for_tokens(code)
             assert tokens.access_token == "access_token_value"
-
-        await auth.close()
-
-    @pytest.mark.asyncio
-    async def test_email_confirmation_flow(self):
-        """Test authentication flow with email confirmation."""
-        auth = InpostAuth()
-
-        with (
-            patch.object(auth._http_client, "get", new_callable=AsyncMock) as mock_get,
-            patch.object(
-                auth._http_client, "post", new_callable=AsyncMock
-            ) as mock_post,
-        ):
-            # After OTP, user needs email confirmation
-            mock_get.return_value = HttpResponse(
-                body={
-                    "step": "PROVIDE_EXISTING_EMAIL_ADDRESS",
-                    "hashedEmail": "t***@example.com",
-                },
-                status=200,
-            )
-
-            step = await auth.get_current_step()
-            requires_email, hashed = step.requires_email
-            assert requires_email is True
-            assert "***" in hashed
-
-            # Request email confirmation
-            mock_post.return_value = HttpResponse(body={}, status=200)
-            await auth.request_email_confirmation()
-
-            # Simulate email confirmation complete
-            mock_get.return_value = HttpResponse(
-                body={"step": "ONBOARDED"},
-                status=200,
-            )
-            step = await auth.get_current_step()
-            assert step.is_onboarded is True
+            assert tokens.refresh_token == "refresh_token_value"
 
         await auth.close()

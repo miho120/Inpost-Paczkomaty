@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from yarl import URL
 
 from custom_components.inpost_paczkomaty.exceptions import InPostApiError
 from custom_components.inpost_paczkomaty.http_client import HttpClient
@@ -238,6 +239,26 @@ class TestHttpClient:
 
         # This should not raise even without a session
         client.update_cookies({"test_cookie": "test_value"})
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_set_domain_cookies_applied_on_session_creation(self):
+        """Cookies set before a session exists are applied when it is created."""
+        client = HttpClient()
+
+        # No session yet; cookies should be stored for later.
+        client.set_domain_cookies(
+            {"SESSION": "abc123"}, url="https://account.inpost-group.com"
+        )
+        assert client._initial_cookies == {"SESSION": "abc123"}
+
+        # Creating the session applies the stored cookies.
+        session = await client._ensure_session()
+        cookies = session.cookie_jar.filter_cookies(
+            URL("https://account.inpost-group.com")
+        )
+        assert cookies["SESSION"].value == "abc123"
 
         await client.close()
 
