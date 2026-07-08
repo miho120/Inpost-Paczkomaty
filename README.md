@@ -9,28 +9,32 @@ configured lockers.
 ---
 
 ~~~
-⚠️ Breaking Changes in version 0.3.0
+⚠️ Breaking Change: login flow updated (captcha support)
 
-> Important: Existing users will need to re-configure the integration after updating.
+> Important: Existing users will need to re-authenticate the integration after updating.
 
-- OAuth2 authentication: External authentication service is no longer used
-- Config entry structure: Data structure changed; existing configurations are incompatible
+InPost now requires a captcha during login, so credentials can no longer be submitted directly from Home Assistant.
+Authentication is now completed in your browser and the resulting authorization code is pasted back into Home Assistant.
 
 ➡️ Migration Steps
 
-Note: Simply re-adding the integration should work for most users. Full removal (steps 1-2) is only needed if you encounter issues.
-
 1. Remove the existing InPost Paczkomaty integration from Home Assistant
-2. Restart Home Assistant
-3. Add the integration again and complete the new authentication flow
-4. Re-select your preferred parcel lockers
+2. Add the integration again and complete the new browser-based login flow
+3. Re-select your preferred parcel lockers
 ~~~~
 
 ## How It Works
 
-1. **Authentication:** You provide your **phone number** to the integration setup. You then receive an **SMS code**
-   which you also provide. If prompted, verify your email by clicking the link in the email sent to you by InPost (this can be done on any device).
-2. **Data Flow:** Authentication data is stored locally and send only to official InPost servers for authentication purposes. After successful authentication API tokens are stored on you HA instance (refresh token, access token, etc).
+1. **Authentication:** During setup, Home Assistant shows a link to the **InPost login page**. You open it in your
+   browser and sign in there - handling the **phone number**, **SMS code**, **captcha** and (if prompted) **email
+   confirmation** on InPost's own pages. After a successful login your browser is redirected to a
+   `https://account.inpost-group.com/callback?code=...` page; you copy that address (or just the code) and paste it back
+   into Home Assistant.
+   > **Tip:** If opening the InPost login page shows you as **already logged in/empty page** (it skips straight past the sign-in),
+   > clear your browser cookies for `account.inpost-group.com` and open the link again to complete a fresh login.
+2. **Data Flow:** Login happens entirely in your browser on official InPost pages. Home Assistant only exchanges the
+   returned authorization code for API tokens (access token, refresh token, etc.), which are stored locally on your HA
+   instance.
 3. **Polling:** Home Assistant polls the InPost API every **30 seconds** (configurable) to retrieve the latest updates on your
    parcels.
 
@@ -47,9 +51,13 @@ Note: Simply re-adding the integration should work for most users. Full removal 
 5. **Restart Home Assistant**.
 6. Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Integrations** $\rightarrow$ **Add
    Integration**, and search for **InPost Paczkomaty**.
-7. Complete the setup flow by providing your phone number and the received SMS code.
-8. If prompted, verify your email by clicking the link in the email sent by InPost (this can be done on any device). **Note:** This is a legitimate verification email - it will **not** ask for any credentials. Once verified, click `Submit` to proceed.
+7. Open the **InPost login page** link shown in the setup dialog and sign in in your browser (phone number, SMS code, captcha and, if prompted, email confirmation). **Note:** Any verification email from InPost is legitimate - it will **not** ask for any credentials. If the page shows you as **already logged in/empty page**, clear your browser cookies for `account.inpost-group.com` and open the link again.
+8. After logging in, your browser is redirected to a `https://account.inpost-group.com/callback?code=...` page (it may look blank or show an error - that is fine). Copy the full address from your browser's address bar and paste it back into Home Assistant.
 9. Select the parcel lockers you wish to monitor. Your favorite lockers from your InPost profile will be pre-selected automatically.
+
+> 🎥 Prefer to watch?
+> 
+> [![authentication tutorial on YouTube](https://img.youtube.com/vi/C_7XYLEjjgs/0.jpg)](https://www.youtube.com/watch?v=C_7XYLEjjgs).
 
 ### Manual Installation
 
@@ -57,7 +65,7 @@ Note: Simply re-adding the integration should work for most users. Full removal 
 2. Unpack the release and copy the content into the `custom_components/inpost_paczkomaty` directory within your Home
    Assistant configuration folder.
 3. **Restart Home Assistant**.
-4. Execute steps **6, 7, and 8** from the HACS installation method above.
+4. Execute steps **6, 7, 8, and 9** from the HACS installation method above.
 
 ---
 
@@ -422,8 +430,8 @@ Please create a new GitHub Issue for any feature request you might have.
 
 ## Disclaimers
 
-| Item             | Details                                                                                                                                   |
-|:-----------------|:------------------------------------------------------------------------------------------------------------------------------------------|
-| **Usage Limits** | InPost API may apply HTTP request rate limiting.                                                                                          |
-| **API AUTH**     | InPost API may require additional authentication in future. Currently this integration use refresh token to keep access token up to date. |
-| **Inspiration**  | Some parts of the codebase were **heavily** inspired by [InPost-Air](https://github.com/CyberDeer/InPost-Air).                            |
+| Item             | Details                                                                                                                                             |
+|:-----------------|:----------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Usage Limits** | InPost API may apply HTTP request rate limiting.                                                                                                    |
+| **API AUTH**     | Login requires a captcha and is completed in your browser; Home Assistant then uses the returned refresh token to keep the access token up to date. |
+| **Inspiration**  | Some parts of the codebase were **heavily** inspired by [InPost-Air](https://github.com/CyberDeer/InPost-Air).                                      |

@@ -4,14 +4,13 @@ InPost Authentication Module for Home Assistant.
 This module handles the OAuth2 authentication flow for InPost services.
 """
 
-import asyncio
 import base64
 import binascii
 import hashlib
 import logging
 import os
 import re
-import time
+from urllib.parse import parse_qs, urlencode
 
 from .const import (
     API_BASE_URL,
@@ -20,7 +19,7 @@ from .const import (
     OAUTH_REDIRECT_URI,
 )
 from .http_client import HttpClient
-from .models import AuthStep, AuthTokens, HttpResponse
+from .models import AuthTokens
 from .utils import get_language_code
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,11 +29,10 @@ class InpostAuth:
     """
     InPost OAuth2 Authentication Handler.
 
-    Manages the complete authentication flow including:
-    - OAuth2 initialization with PKCE
-    - Phone number verification via OTP
-    - Email confirmation
-    - Token retrieval
+    The user performs the interactive login (phone number, SMS code, captcha and
+    email confirmation) in an external browser window. The authenticated browser
+    session cookie is then injected here so we can mint an authorization code
+    server-side (using our own PKCE) and exchange it for access/refresh tokens.
     """
 
     # Use constants from const.py
@@ -112,202 +110,61 @@ class InpostAuth:
             "response_mode": "query",
         }
 
-    async def initialize_session(self) -> HttpResponse:
+    def build_login_url(self) -> str:
         """
-        Step 1: Initialize OAuth session and get cookies.
+        Build the InPost login URL for the user to open in a browser.
 
-        Makes initial request to OAuth2 authorize endpoint to establish
-        session cookies required for the authentication flow.
+        Opening this URL triggers InPost's own login flow (phone number, SMS
+        code, captcha and email confirmation). After a successful login the
+        browser holds an authenticated ``SESSION`` cookie that can be pasted
+        back into Home Assistant.
 
         Returns:
-            HttpResponse with session initialization result.
+            Fully-qualified OAuth2 authorize URL.
         """
-        _LOGGER.info("Initializing OAuth session")
-        url = f"{self.OAUTH_BASE_URL}/oauth2/authorize"
-        response = await self._http_client.get(
-            url=url, params=self._build_oauth_params()
-        )
-        _LOGGER.debug("Session initialized with status: %d", response.status)
-        return response
+        return f"{self.OAUTH_BASE_URL}/oauth2/authorize?{urlencode(self._build_oauth_params())}"
 
-    async def fetch_xsrf_token(self) -> AuthStep:
+    def extract_authorization_code(self, redirect_input: str) -> str:
         """
-        Step 2: Fetch and set the XSRF token.
+        Extract the OAuth2 authorization code from the user's browser redirect.
 
-        Retrieves the XSRF token from the onboarding steps endpoint
-        and updates the HTTP client headers with it.
-
-        Returns:
-            AuthStep with current onboarding step status.
-        """
-        _LOGGER.info("Fetching XSRF token")
-        url = f"{self.OAUTH_BASE_URL}/api/auth/onboarding/steps"
-        response = await self._http_client.get(url=url)
-
-        # Extract and set XSRF token from cookies
-        xsrf_cookie = response.cookies.get("XSRF-TOKEN")
-        if xsrf_cookie:
-            self._http_client.update_headers({"X-XSRF-TOKEN": xsrf_cookie.value})
-            _LOGGER.debug("XSRF token set successfully")
-
-        # Set locale cookie for Polish language
-        self._http_client.update_cookies({"NEXT_LOCALE": self._language_code})
-
-        step = response.body.get("step", "") if isinstance(response.body, dict) else ""
-        _LOGGER.info("Current step: %s", step)
-        return AuthStep(step=step, raw_response=response.body)
-
-    async def get_current_step(self) -> AuthStep:
-        """
-        Get the current onboarding step status.
-
-        Returns:
-            AuthStep with current step information.
-        """
-        url = f"{self.OAUTH_BASE_URL}/api/auth/onboarding/steps"
-        response = await self._http_client.get(url=url)
-        step = response.body.get("step", "") if isinstance(response.body, dict) else ""
-        _LOGGER.debug("Current step: %s", step)
-        return AuthStep(step=step, raw_response=response.body)
-
-    async def submit_phone_number(self, phone_number: str) -> AuthStep:
-        """
-        Step 3: Submit phone number to receive OTP code.
+        After the user logs in via ``build_login_url()``, InPost redirects the
+        browser to ``.../callback?code=...&state=...``. The user pastes back
+        either that full URL or just the ``code`` value.
 
         Args:
-            phone_number: Phone number with country code (e.g., "+48123456789").
+            redirect_input: The pasted callback URL, a bare query string, or the
+                raw authorization code.
 
         Returns:
-            AuthStep with next step information.
+            The OAuth2 authorization code.
 
         Raises:
-            IdentityAdditionLimitReachedError: When identity addition limit reached.
-            InPostApiError: For other API errors.
+            ValueError: If no code can be extracted or the state does not match.
         """
-        _LOGGER.info("Submitting phone number")
-        url = f"{self.OAUTH_BASE_URL}/api/auth/onboarding/steps/phoneNumber"
-        response = await self._http_client.post(
-            url=url, json={"phoneNumber": phone_number}
-        )
+        value = (redirect_input or "").strip()
+        if not value:
+            raise ValueError("No authorization code provided")
 
-        # Check for API errors
-        response.raise_for_error()
+        # A pasted URL / query string contains "code=...".
+        if "code=" in value:
+            query = value.split("?", 1)[1] if "?" in value else value
+            params = parse_qs(query)
 
-        step = response.body.get("step", "") if isinstance(response.body, dict) else ""
-        _LOGGER.debug("Phone submission result step: %s", step)
-        return AuthStep(step=step, raw_response=response.body)
+            codes = params.get("code")
+            if not codes or not codes[0]:
+                raise ValueError("Authorization code not found in redirect URL")
 
-    async def submit_otp_code(self, code: str) -> AuthStep:
-        """
-        Step 4: Submit OTP verification code.
+            state = params.get("state", [None])[0]
+            if state and state != self._flow_state:
+                raise ValueError("State mismatch in redirect URL")
 
-        Args:
-            code: The OTP code received via SMS.
+            _LOGGER.debug("Authorization code extracted from redirect URL")
+            return codes[0]
 
-        Returns:
-            AuthStep with next step information.
-
-        Raises:
-            InvalidOtpCodeError: When OTP code is invalid or expired.
-            InPostApiError: For other API errors.
-        """
-        _LOGGER.info("Submitting OTP code")
-        url = f"{self.OAUTH_BASE_URL}/api/auth/onboarding/steps/phoneVerificationCode"
-        response = await self._http_client.post(url=url, json={"code": code})
-
-        # Check for API errors
-        response.raise_for_error()
-
-        step = response.body.get("step", "") if isinstance(response.body, dict) else ""
-        _LOGGER.debug("OTP submission result step: %s", step)
-        return AuthStep(step=step, raw_response=response.body)
-
-    async def request_email_confirmation(self) -> HttpResponse:
-        """
-        Step 5: Request email confirmation to be sent.
-
-        Called when step is PROVIDE_EXISTING_EMAIL_ADDRESS.
-
-        Returns:
-            HttpResponse with confirmation request status.
-
-        Raises:
-            InPostApiError: For API errors.
-        """
-        _LOGGER.info("Requesting email confirmation")
-        url = f"{self.OAUTH_BASE_URL}/api/auth/onboarding/steps/sendAuthenticationCodeToExistingEmail"
-        response = await self._http_client.post(
-            url=url, json={"openEmailButtonVisible": True}
-        )
-
-        # Check for API errors
-        response.raise_for_error()
-
-        _LOGGER.debug("Email confirmation request sent")
-        return response
-
-    async def wait_for_email_confirmation(
-        self, poll_interval: float = 2.0, timeout: float = 300.0
-    ) -> bool:
-        """
-        Step 6: Poll until user confirms email.
-
-        Continuously checks the onboarding status until the user
-        confirms their email (step becomes ONBOARDED).
-
-        Args:
-            poll_interval: Seconds between status checks.
-            timeout: Maximum seconds to wait for confirmation.
-
-        Returns:
-            True if email was confirmed, False if timeout occurred.
-        """
-        _LOGGER.info("Waiting for email confirmation (timeout: %ds)", timeout)
-        start_time = time.time()
-
-        while (time.time() - start_time) < timeout:
-            auth_step = await self.get_current_step()
-
-            if auth_step.is_onboarded:
-                _LOGGER.info("Email confirmed successfully")
-                return True
-
-            _LOGGER.debug(
-                "Still waiting for email confirmation, step: %s", auth_step.step
-            )
-            await asyncio.sleep(poll_interval)
-
-        _LOGGER.warning("Email confirmation timeout after %ds", timeout)
-        return False
-
-    async def fetch_authorization_code(self) -> str:
-        """
-        Fetch the OAuth2 authorization code after onboarding.
-
-        Makes a request to the authorize endpoint to get the
-        authorization code from the redirect location.
-
-        Returns:
-            OAuth2 authorization code.
-
-        Raises:
-            ValueError: If authorization code cannot be extracted.
-        """
-        _LOGGER.info("Fetching authorization code")
-        url = f"{self.OAUTH_BASE_URL}/oauth2/authorize"
-        response = await self._http_client.get(
-            url=url, params=self._build_oauth_params()
-        )
-
-        # Extract authorization code from redirect location
-        location = response.headers.get("Location", "")
-        if "code=" not in location:
-            _LOGGER.error("Authorization code not found in redirect location")
-            raise ValueError("Authorization code not found in redirect location")
-
-        code = location.split("code=")[1].split("&")[0]
-        _LOGGER.debug("Authorization code obtained")
-        return code
+        # Otherwise treat the whole input as the raw authorization code.
+        _LOGGER.debug("Authorization code provided directly")
+        return value
 
     async def exchange_code_for_tokens(self, authorization_code: str) -> AuthTokens:
         """
